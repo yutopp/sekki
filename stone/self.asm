@@ -33,9 +33,9 @@ segment_align equ 0x100
     ;; e_shentsize, (64)
     dw 0x0040
     ;; e_shnum
-    dw 0x0000
+    dw 0x0003
     ;; e_shstrndx
-    dw 0x0000
+    dw 0x0001
 
 
 
@@ -65,9 +65,9 @@ phdrs:
     ;; p_flags, R(4)X(1)
     dd 0x00000005
     ;; p_offset
-    dq 0x0000000000001000
+    dq code_segment_begin-$$
     ;; p_vaddr,
-    dq $$+0x0000000000001000
+    dq code_segment_begin
     ;; p_paddr
     dq 0
     ;; p_filesz
@@ -77,20 +77,101 @@ phdrs:
     ;; p_align
     dq segment_align
 
+
+
 ;;; Segments
     ;; Rest
+section_strtab_begin:
+sym_null:   db 0
+sym_name_sym:   db ".sym", 0
+sym_name_text:  db ".text", 0
+section_strtab_end:
+
 rest_size equ ($-$$)
     align segment_align
+initial_segment_end:
+
 
     ;; Code
-code_segment:
+code_segment_begin:
+
+section_text_begin:
 _start:
     mov rax, 60
     mov rdi, 42
     syscall
+section_text_end:
 
-code_segment_rest_size equ ($-code_segment)
+code_segment_rest_size equ ($-code_segment_begin)
     align segment_align
+code_segment_end:
+
+
 
 ;;; Section headers
 shdrs:
+    ;; [0] NULL
+    ;; sh_name
+    dd 0x00000000
+    ;; sh_type
+    dd 0x00000000
+    ;; sh_flags
+    dq 0x0000000000000000
+    ;; sh_addr
+    dq 0x0000000000000000
+    ;; sh_offset
+    dq 0x0000000000000000
+    ;; sh_size
+    dq 0x0000000000000000
+    ;; sh_link
+    dd 0x00000000
+    ;; sh_info
+    dd 0x00000000
+    ;; sh_addralign
+    dq 0x0000000000000000
+    ;; sh_entsize
+    dq 0x0000000000000000
+
+    ;; [1] .sym
+    ;; sh_name
+    dd sym_name_sym-section_strtab_begin
+    ;; sh_type, SHT_STRTAB
+    dd 0x00000003
+    ;; sh_flags
+    dq 0x0000000000000000
+    ;; sh_addr
+    dq 0x0000000000000000
+    ;; sh_offset
+    dq section_strtab_begin-$$
+    ;; sh_size
+    dq section_strtab_end-section_strtab_begin
+    ;; sh_link
+    dd 0x00000000
+    ;; sh_info
+    dd 0x00000000
+    ;; sh_addralign
+    dq 0x0000000000000001
+    ;; sh_entsize
+    dq 0x0000000000000000
+
+    ;; [2] .text
+    ;; sh_name
+    dd sym_name_text-section_strtab_begin
+    ;; sh_type, SHT_STRTAB
+    dd 0x00000001
+    ;; sh_flags, X(4)A(2)
+    dq 0x0000000000000006
+    ;; sh_addr
+    dq section_text_begin
+    ;; sh_offset
+    dq section_text_begin-$$
+    ;; sh_size
+    dq section_text_end-section_text_begin
+    ;; sh_link
+    dd 0x00000000
+    ;; sh_info
+    dd 0x00000000
+    ;; sh_addralign, 16
+    dq 0x0000000000000010
+    ;; sh_entsize
+    dq 0x0000000000000000
