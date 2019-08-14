@@ -44,8 +44,8 @@ phdrs:
     ;; [0]
     ;; p_type, PT_LOAD
     dd 0x00000001
-    ;; p_flags, R(4)X(1)
-    dd 0x00000005
+    ;; p_flags, R(4)
+    dd 0x00000004
     ;; p_offset
     dq 0x0000000000000000
     ;; p_vaddr,
