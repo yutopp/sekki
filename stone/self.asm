@@ -1,7 +1,7 @@
     bits    64
     org     0x00400000          ; このあたりにマッピングしておきたい
 
-segment_align equ 0x100
+segment_align equ 0x1000
 
 ;;; ELF Header
     ;; e_ident
