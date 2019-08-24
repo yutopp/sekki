@@ -1,7 +1,11 @@
     bits    64
     org     0x00400000          ; このあたりにマッピングしておきたい
 
-segment_align equ 0x1000
+segment_align:  equ 0x1000
+
+app_max_code_buffer_size:   equ 0x8000
+app_max_out_buffer_size:    equ 0x8000
+app_max_sexp_objects_count: equ 2000
 
 ;;; ELF Header
     ;; e_ident
@@ -33,7 +37,7 @@ segment_align equ 0x1000
     ;; e_shentsize, (64)
     dw 0x0040
     ;; e_shnum
-    dw 0x0004
+    dw 0x0005
     ;; e_shstrndx
     dw 0x0001
 
@@ -103,9 +107,10 @@ sym_null:   db 0
 sym_name_sym:   db ".sym", 0
 sym_name_text:  db ".text", 0
 sym_name_bss:   db ".bss", 0
+sym_name_rodata:   db ".rodata", 0
 section_strtab_end:
 
-rest_size equ ($-$$)
+rest_size:  equ ($-$$)
     align segment_align
 initial_segment_end:
 
@@ -113,30 +118,574 @@ initial_segment_end:
     ;; Code
 code_segment_begin:
 
+    ;; --> text
 section_text_begin:
 _start:
+    call load_code_from_stdin
+    call print_loaded_code_to_stdout
+
+    mov rdi, 72
+    call sexp_alloc_int
+
+    mov rdi, rax
+    call sexp_print
+
+    call parse_code
+
     mov rax, 60
     mov rdi, [ret_code]
-
     syscall
 
+load_code_from_stdin:
+    xor rax, rax                ; 0 - read
+    xor rdi, rdi                ; fd 0 - stdin
+    mov rsi, g_code_buffer
+    mov rdx, app_max_code_buffer_size
+    syscall
+    ret
+
+print_loaded_code_to_stdout:
+    mov rax, 1                  ; 1 - write
+    mov rdi, 1                  ; fd 1 - stdout
+    mov rsi, g_code_buffer
+    mov rdx, app_max_code_buffer_size
+    syscall
+    ret
+
+parse_code:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 40
+    mov qword [rbp-40], 0       ; return
+    ;; parser {
+    ;;   char* buffer
+    ;;   u64   offset
+    ;;   bool  is_failed
+    ;; }
+    ;; rbp-32: char*, buffer
+    mov qword [rbp-32], g_code_buffer
+    ;; rbp-24: u64, offset
+    mov qword [rbp-24], 0
+    ;; rbp-16: bool, is_failed
+    mov qword [rbp-16], 0
+    mov rax, rbp
+    sub rax, 32
+    ;; rbp-8: *parser
+    mov [rbp-8], rax
+
+    mov rdi, [rbp-8]
+    call start_parse_code
+    mov [rbp-40], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    jne .failed
+
+    mov rdi, [rbp-40]
+    call sexp_print
+
+    mov rax, [rbp-40]
+    jmp .ok
+
+.failed:
+    mov rdi, text_error_failed_to_parse
+    call runtime_print_string
+
+    call runtime_print_newline
+
+    mov rdi, 1
+    call runtime_exit
+
+.ok:
+    leave
+    ret
+
+;;; rdi: *parser
+start_parse_code:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 24
+
+    mov qword [rbp-24], 0       ; return
+    mov qword [rbp-16], 0       ; u64, initial offset
+    mov [rbp-8], rdi            ; *parser
+
+    call parser_get_index
+    mov [rsp-16], rax
+
+    mov rdi, [rbp-8]
+    call parse_symbol
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    jne .failed
+
+    mov rax, [rbp-24]
+    jmp .ok
+
+.failed:
+    ;; revert
+    mov rdi, [rbp-8]
+    mov rsi, [rbp-16]
+    call parser_move_offset
+
+.ok:
+    leave
+    ret
+
+parse_symbol:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 24
+
+    mov byte [rbp-24], 0        ; second-letter flag
+    mov qword [rbp-16], 0       ; u64, initial offset
+    mov [rbp-8], rdi            ; *parser
+
+    call parser_get_index
+    mov [rsp-16], rax
+
+    mov rdi, [rbp-8]
+    call parser_skip_space
+
+    mov rdi, [rbp-8]
+    call parser_get_index
+    mov r10, rax
+
+.loop:
+    mov rdi, [rbp-8]
+    call parser_get_char
+
+    ;; al >= 'A' && al <= 'Z'
+    ;; al-'A' <= 'Z'-'A'(25)
+    mov cl, al
+    sub cl, 65                  ; 'A'
+    cmp cl, 25
+    jbe .ok
+
+    ;; al >= 'a' && al <= 'z'
+    ;; al-'a' <= 'z'-'a'(25)
+    mov cl, al
+    sub cl, 97                  ; 'a'
+    cmp cl, 25
+    jbe .ok
+
+    ;; al == '*'(42)
+    cmp al, 42
+    je .ok
+
+    ;; al == '+'(43)
+    cmp al, 43
+    je .ok
+
+    ;; check if this character is the second character or later
+    mov cl, [rbp-24]
+    cmp cl, 0
+    je .out_of_char
+
+    ;; al >= '0' && al <= '9'
+    ;; al-'0' <= '9'-'0'(9)
+    mov cl, al
+    sub cl, 48                  ; '0'
+    cmp cl, 9
+    jbe .ok
+
+    jmp .out_of_char
+
+.ok:
+    mov rdi, [rbp-8]
+    call parser_step_char
+
+    mov byte [rbp-24], 1        ; second-flag
+    jmp .loop
+
+.out_of_char:
+    ;; if current_offset - initial_offset == 0
+    mov rdi, [rbp-8]
+    call parser_get_index
+    mov rcx, rax
+    sub rcx, r10
+    cmp rcx, 0
+    je .not_matched
+
+    mov rdi, [rbp-8]
+    call parser_get_buffer
+    mov rdi, rax
+    add rdi, r10
+    mov rsi, rcx
+    call sexp_alloc_string
+
+    jmp .finalize
+
+.not_matched:
+    mov rdi, [rbp-8]
+    mov rsi, 1
+    call parser_change_failed
+
+.finalize:
+    leave
+    ret
+
+;;; rdi: *parser
+parser_get_index:
+    mov rax, [rdi+8]            ; offset
+    ret
+
+;;; rdi: *parser
+;;; rsi: u64
+parser_move_offset:
+    mov [rdi+8], rsi
+    ret
+
+;;; rdi: *parser
+parser_get_buffer:
+    mov rax, [rdi]              ; buffer
+    ret
+
+;;; rdi: *parser
+parser_get_char:
+    mov rcx, [rdi]              ; buffer
+    call parser_get_index
+    add rcx, rax
+    mov al, [rcx]
+    ret
+
+;;; rdi: *parser
+parser_is_failed:
+    mov rax, [rdi+16]           ; failed
+    and rax, 0x00000001
+    ret
+
+;;; rdi: *parser
+;;; rsi: bool
+parser_change_failed:
+    mov [rdi+16], rsi
+    ret
+
+;;; rdi: *parser
+parser_step_char:
+    call parser_get_index
+    mov rsi, rax
+    inc rsi
+    call parser_move_offset
+    ret
+
+;;; rdi: *parser
+parser_skip_space:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 8
+    mov [rbp-8], rdi            ; parser*
+
+.loop:
+    mov rdi, [rbp-8]
+    call parser_get_char
+
+    cmp al, 0x00
+    je .break
+
+    cmp al, 0x20                ; ' '
+    je .found_space
+
+    cmp al, 0x3b                ; ';'
+    je .found_comment
+
+    jmp .break
+
+.found_space:
+    mov rdi, [rbp-8]
+    call parser_step_char
+
+    jmp .loop
+
+.found_comment:
+    mov rdi, [rbp-8]
+    call parser_skip_unlil_lf
+    jmp .break
+
+.break:
+    leave
+    ret
+
+
+;;; rdi: *parser
+parser_skip_unlil_lf:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 8
+    mov [rbp-8], rdi            ; parser*
+
+.loop:
+    mov rdi, [rbp-8]
+    call parser_get_char
+
+    cmp al, 0x00
+    je .break
+
+    cmp al, 0x0a                ; '\n'
+    je .break
+
+    mov rdi, [rbp-8]
+    call parser_step_char
+
+    jmp .loop
+
+.break:
+    leave
+    ret
+
+;;;
+;;; struct value {
+;;;   u64       tag; (0: int, 1: string)
+;;;   union {
+;;;     u64 unum;
+;;;     struct {
+;;;       value* car
+;;;       value* cdr
+;;;     }
+;;;   }
+;;; }
+;;; sizeof: 24
+;;;
+sexp_alloc:
+    push rbp
+    mov rbp, rsp
+
+    mov rcx, [g_sexp_objects_count]
+    cmp rcx, app_max_sexp_objects_count
+    je sexp_cannot_alloc
+
+    mov rax, rcx
+    mov rdx, 24
+    mul rdx
+    mov rcx, g_sexp_objects
+    add rax, rcx
+
+    mov rcx, [g_sexp_objects_count]
+    inc rcx
+    mov [g_sexp_objects_count], rcx
+
+    leave
+    ret
+
+sexp_cannot_alloc:
+    ;; TODO
+    mov rax, 60
+    mov rdi, 2
+    syscall
+
+;;; rdi: int
+sexp_alloc_int:
+    call sexp_alloc
+    mov rcx, rax
+
+    mov qword [rcx], 0
+
+    add rcx, 8
+    mov [rcx], rdi
+
+    ret
+
+;;; rdi: *char
+;;; rsi: u64
+sexp_alloc_string:
+    call sexp_alloc
+    mov rcx, rax
+
+    mov qword [rcx], 1
+
+    mov [rcx+8], rdi
+    mov [rcx+16], rsi
+
+    ret
+
+sexp_print:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 8
+
+    mov [rbp-8], rdi            ; *value
+
+    mov rax, [rbp-8]
+    cmp rax, 0
+    je .print_nil
+
+    mov rax, [rax]
+    cmp rax, 0
+    je .print_int
+
+    cmp rax, 1
+    je .print_string
+
+    jmp .print_unknown
+
+.print_nil:
+    mov rdi, text_sexp_nil
+    call runtime_print_string
+    jmp .finalize
+
+.print_unknown:
+    mov rdi, text_sexp_unknown
+    call runtime_print_string
+    jmp .finalize
+
+.print_int:
+    mov rdi, text_sexp_int
+    call runtime_print_string
+
+    mov rax, [rbp-8]
+    mov rdi, [rax+8]
+    call runtime_print_uint64
+    jmp .finalize
+
+.print_string:
+    mov rdi, text_sexp_string
+    call runtime_print_string
+
+    mov rax, [rbp-8]
+    mov rdi, [rax+8]
+    mov rsi, [rax+16]
+    call runtime_print_string_view
+    jmp .finalize
+
+.finalize:
+    leave
+    ret
+
+
+;;; rdi: u64
+runtime_print_uint64:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 128
+
+    mov rax, rdi
+
+    mov rsi, rbp
+    sub rsi, 1
+    mov byte [rsi], 0           ; null-terminate
+
+.count_digit_and_update_buffer:
+    mov rdx, 0
+    mov rcx, 10
+    div rcx
+
+    add rdx, 48                 ; to ascii -> '0' + number(rdx)
+    dec rsi
+    mov byte [rsi], dl
+
+    cmp rax, 0
+    jne .count_digit_and_update_buffer
+
+    mov rdi, rsi
+    call runtime_print_string
+
+    leave
+    ret
+
+
+;;;
+runtime_strlen:
+    push rbp
+    mov rbp, rsp
+
+    mov rax, 0
+.count:
+    mov cl, [rdi+rax]
+    cmp cl, 0
+    je .finish
+    inc rax
+    jmp .count
+
+.finish:
+    leave
+    ret
+
+
+;;;
+runtime_print_string:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 8
+    mov [rbp-8], rdi
+
+    call runtime_strlen
+
+    mov rdi, [rbp-8]
+    mov rsi, rax
+    call runtime_print_string_view
+
+    leave
+    ret
+
+runtime_print_string_view:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 16
+    mov [rbp-16], rdi
+    mov [rbp-8], rsi
+
+    mov rax, 1                  ; 1 - write
+    mov rdi, 1                  ; fd 1 - stdout
+    mov rsi, [rbp-16]           ; buffer
+    mov rdx, [rbp-8]            ; count
+    syscall
+
+    leave
+    ret
+
+runtime_print_newline:
+    mov rdi, text_lf
+    call runtime_print_string
+    ret
+
+runtime_exit:
+    mov rax, 60
+    syscall
 
 section_text_end:
+    ;; --< bss
 
-code_segment_rest_size equ ($-code_segment_begin)
+code_segment_rest_size: equ ($-code_segment_begin)
     align segment_align
 code_segment_end:
 
     ;; Data
 data_segment_begin:
 
+    ;; --> bss
 section_bss_begin:
 
 ret_code:   dq 42
 
-section_bss_end:
+g_code_buffer:  times app_max_code_buffer_size db 0
 
-data_segment_rest_size equ ($-data_segment_begin)
+g_out_buffer:  times app_max_out_buffer_size db 0
+g_out_buffer_size:  dq 0
+
+g_sexp_objects:  resb 24 * app_max_sexp_objects_count
+g_sexp_objects_count:  dq 0
+
+section_bss_end:
+    ;; --< bss
+
+    ;; --> rodata
+section_rodata_begin:
+
+text_sexp_nil:  db "nil", 0
+text_sexp_unknown:  db "unknown", 0
+text_sexp_int:  db "int", 0
+text_sexp_string:  db "string", 0
+text_error_failed_to_parse: db "Failed to parse", 0
+text_lf:     db 0x0a, 0
+
+section_rodata_end:
+    ;; --< rodata
+
+data_segment_rest_size: equ ($-data_segment_begin)
     align segment_align
 data_segment_end:
 
@@ -226,7 +775,29 @@ shdrs:
     dd 0x00000000
     ;; sh_info
     dd 0x00000000
-    ;; sh_addralign, 16
-    dq 0x0000000000000010
+    ;; sh_addralign, 1
+    dq 0x0000000000000001
+    ;; sh_entsize
+    dq 0x0000000000000000
+
+    ;; [4] .rodata
+    ;; sh_name
+    dd sym_name_rodata-section_strtab_begin
+    ;; sh_type, SHT_NOBITS
+    dd 0x00000008
+    ;; sh_flags, A(2)
+    dq 0x0000000000000002
+    ;; sh_addr
+    dq section_rodata_begin
+    ;; sh_offset
+    dq section_rodata_begin-$$
+    ;; sh_size
+    dq section_rodata_end-section_rodata_begin
+    ;; sh_link
+    dd 0x00000000
+    ;; sh_info
+    dd 0x00000000
+    ;; sh_addralign, 1
+    dq 0x0000000000000001
     ;; sh_entsize
     dq 0x0000000000000000
