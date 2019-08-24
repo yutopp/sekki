@@ -29,11 +29,11 @@ segment_align equ 0x1000
     ;; e_phentsize, (56)
     dw 0x0038
     ;; e_phnum
-    dw 0x0002
+    dw 0x0003
     ;; e_shentsize, (64)
     dw 0x0040
     ;; e_shnum
-    dw 0x0003
+    dw 0x0004
     ;; e_shstrndx
     dw 0x0001
 
@@ -77,6 +77,23 @@ phdrs:
     ;; p_align
     dq segment_align
 
+    ;; [2]
+    ;; p_type, PT_LOAD
+    dd 0x00000001
+    ;; p_flags, R(4)W(2)
+    dd 0x00000006
+    ;; p_offset
+    dq data_segment_begin-$$
+    ;; p_vaddr,
+    dq data_segment_begin
+    ;; p_paddr
+    dq 0
+    ;; p_filesz
+    dq data_segment_rest_size
+    ;; p_memsz
+    dq data_segment_rest_size
+    ;; p_align
+    dq segment_align
 
 
 ;;; Segments
@@ -85,6 +102,7 @@ section_strtab_begin:
 sym_null:   db 0
 sym_name_sym:   db ".sym", 0
 sym_name_text:  db ".text", 0
+sym_name_bss:   db ".bss", 0
 section_strtab_end:
 
 rest_size equ ($-$$)
@@ -98,14 +116,29 @@ code_segment_begin:
 section_text_begin:
 _start:
     mov rax, 60
-    mov rdi, 42
+    mov rdi, [ret_code]
+
     syscall
+
+
 section_text_end:
 
 code_segment_rest_size equ ($-code_segment_begin)
     align segment_align
 code_segment_end:
 
+    ;; Data
+data_segment_begin:
+
+section_bss_begin:
+
+ret_code:   dq 42
+
+section_bss_end:
+
+data_segment_rest_size equ ($-data_segment_begin)
+    align segment_align
+data_segment_end:
 
 
 ;;; Section headers
@@ -167,6 +200,28 @@ shdrs:
     dq section_text_begin-$$
     ;; sh_size
     dq section_text_end-section_text_begin
+    ;; sh_link
+    dd 0x00000000
+    ;; sh_info
+    dd 0x00000000
+    ;; sh_addralign, 16
+    dq 0x0000000000000010
+    ;; sh_entsize
+    dq 0x0000000000000000
+
+    ;; [3] .bss
+    ;; sh_name
+    dd sym_name_bss-section_strtab_begin
+    ;; sh_type, SHT_NOBITS
+    dd 0x00000008
+    ;; sh_flags, A(2)W(1)
+    dq 0x0000000000000003
+    ;; sh_addr
+    dq section_bss_begin
+    ;; sh_offset
+    dq section_bss_begin-$$
+    ;; sh_size
+    dq section_bss_end-section_bss_begin
     ;; sh_link
     dd 0x00000000
     ;; sh_info
