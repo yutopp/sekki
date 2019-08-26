@@ -181,6 +181,7 @@ parse_code:
 
     mov rdi, [rbp-40]
     call sexp_print
+    call runtime_print_newline
 
     mov rdi, [rbp-8]
     call parser_is_finished
@@ -214,8 +215,11 @@ parse_code:
 parse_statement:
     push rbp
     mov rbp, rsp
-    sub rsp, 32
+    sub rsp, 56
 
+    mov qword [rbp-56], 0       ; tmp-arg
+    mov qword [rbp-48], 0       ; last-args
+    mov qword [rbp-40], 0       ; args
     mov qword [rbp-32], 0       ; second-or-later-flag
     mov qword [rbp-24], 0       ; return
     mov qword [rbp-16], 0       ; u64, initial offset
@@ -271,7 +275,7 @@ parse_statement:
     mov rdi, [rbp-8]
     call parse_newline_or_term
     cmp rax, 0
-    jne .succeeded
+    jne .inst_found
 
     ;; Reset failure of newline parsing
     mov rdi, [rbp-8]
@@ -295,16 +299,63 @@ parse_statement:
 
     mov rdi, [rbp-8]
     call parse_expr
-    mov [rbp-24], rax
+    mov [rbp-56], rax           ; tmp-arg
 
     mov rdi, [rbp-8]
     call parser_is_failed
     cmp rax, 0
     jne .failed
 
+    ;; append to args
+    mov rdi, [rbp-56]
+    mov rsi, 0
+    call sexp_alloc_cons
+    mov [rbp-56], rax           ; (value, nil)
+
+    mov rax, [rbp-40]           ; args
+    cmp rax, 0
+    jne .update_args
+
+    mov rax, [rbp-56]           ; (value, nil)
+    mov [rbp-40], rax           ; args
+    mov [rbp-48], rax           ; last-args
+
     jmp .loop_args
 
+.update_args:
+    mov rdi, [rbp-48]           ; last-args
+    mov rsi, [rbp-56]           ; (value, nil)
+    call sexp_update_cdr
+
+    mov rax, [rbp-56]           ; (value, nil)
+    mov [rbp-48], rax           ; last-args
+
+    jmp .loop_args
+
+.inst_found:
+    ;; ((1, value), (args...) | nil)
+    mov rdi, 1
+    call sexp_alloc_int
+    mov rdi, rax                ; 1
+    mov rsi, [rbp-24]           ; value
+    call sexp_alloc_cons
+    mov rdi, rax                ; (1, value)
+    mov rsi, [rbp-40]           ; (args...) | nil
+    call sexp_alloc_cons
+    mov [rbp-24], rax           ; ((0, value), (args...) | nil)
+    jmp .succeeded
+
 .label_found:
+    ;; ((0, value), nil)
+    mov rdi, 0
+    call sexp_alloc_int
+    mov rdi, rax                ; 0
+    mov rsi, [rbp-24]           ; value
+    call sexp_alloc_cons
+    mov rdi, rax                ; (0, value)
+    mov rsi, 0                  ; nil
+    call sexp_alloc_cons
+    mov [rbp-24], rax           ; ((0, value), nil)
 
 .succeeded:
     mov rax, [rbp-24]
@@ -1119,6 +1170,26 @@ sexp_alloc_string:
 
     ret
 
+;;; rdi: *value car
+;;; rsi: *value cdr
+sexp_alloc_cons:
+    call sexp_alloc
+    mov rcx, rax
+
+    mov qword [rcx], 2          ; tag
+    mov [rcx+8], rdi
+    mov [rcx+16], rsi
+
+    ret
+
+
+;;; rdi: *value cons
+;;; rsi: *value cdr
+sexp_update_cdr:
+    mov [rdi+16], rsi
+
+    ret
+
 sexp_print:
     push rbp
     mov rbp, rsp
@@ -1140,6 +1211,9 @@ sexp_print:
     cmp rax, 1
     je .print_string
 
+    cmp rax, 2
+    je .print_cons
+
     jmp .print_unknown
 
 .print_nil:
@@ -1153,22 +1227,44 @@ sexp_print:
     jmp .finalize
 
 .print_int:
-    mov rdi, text_sexp_int
-    call runtime_print_string
-
     mov rax, [rbp-8]
     mov rdi, [rax+8]
     call runtime_print_uint64
+
+    mov rdi, str_colon
+    call runtime_print_string
+
+    mov rdi, text_sexp_int
+    call runtime_print_string
+
     jmp .finalize
 
 .print_string:
-    mov rdi, text_sexp_string
-    call runtime_print_string
-
     mov rax, [rbp-8]
     mov rdi, [rax+8]
     mov rsi, [rax+16]
     call runtime_print_string_view
+
+    mov rdi, str_colon
+    call runtime_print_string
+
+    mov rdi, text_sexp_string
+    call runtime_print_string
+
+    jmp .finalize
+
+.print_cons:
+    mov rax, [rbp-8]
+    mov rdi, [rax+8]            ; car
+    call sexp_print
+
+    mov rdi, str_comma
+    call runtime_print_string
+
+    mov rax, [rbp-8]
+    mov rdi, [rax+16]            ; cdr
+    call sexp_print
+
     jmp .finalize
 
 .finalize:
@@ -1310,6 +1406,8 @@ text_lf:     db 0x0a, 0
 
 str_paren_l:    db "(", 0
 str_paren_r:    db ")", 0
+str_colon:      db ":", 0
+str_comma:      db ",", 0
 
 section_rodata_end:
     ;; --< rodata
