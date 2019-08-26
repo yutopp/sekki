@@ -110,7 +110,7 @@ sym_name_bss:   db ".bss", 0
 sym_name_rodata:   db ".rodata", 0
 section_strtab_end:
 
-rest_size:  equ ($-$$)
+rest_size:  equ $-$$
     align segment_align
 initial_segment_end:
 
@@ -155,13 +155,15 @@ parse_code:
     ;; parser {
     ;;   char* buffer
     ;;   u64   offset
-    ;;   bool  is_failed
+    ;;   u64   status = 2  finished
+    ;:                | 1  failed
+    ;:                | 0  running
     ;; }
     ;; rbp-32: char*, buffer
     mov qword [rbp-32], g_code_buffer
     ;; rbp-24: u64, offset
     mov qword [rbp-24], 0
-    ;; rbp-16: bool, is_failed
+    ;; rbp-16: u64, status
     mov qword [rbp-16], 0
     ;; rbp-8: *parser
     lea rax, [rbp-32]
@@ -179,6 +181,11 @@ parse_code:
 
     mov rdi, [rbp-40]
     call sexp_print
+
+    mov rdi, [rbp-8]
+    call parser_is_finished
+    cmp rax, 0
+    jne .finished
 
     jmp .loop
 ;    mov rax, [rbp-40]
@@ -198,6 +205,7 @@ parse_code:
     mov rdi, 1
     call runtime_exit
 
+.finished:
 .ok:
     leave
     ret
@@ -223,7 +231,7 @@ parse_statement:
 
     ;; empty-statement
     mov rdi, [rbp-8]
-    call parse_newline
+    call parse_newline_or_term
     cmp rax, 0
     jne .succeeded
 
@@ -254,15 +262,14 @@ parse_statement:
 
     ;; Reset failure of colon parsing
     mov rdi, [rbp-8]
-    mov rsi, 0
-    call parser_change_failed
+    call parser_reset_failed
 
 .loop_args:
     mov rdi, [rbp-8]
     call parser_skip_space
 
     mov rdi, [rbp-8]
-    call parse_newline
+    call parse_newline_or_term
     cmp rax, 0
     jne .succeeded
 
@@ -280,7 +287,12 @@ parse_statement:
     cmp rax, 0
     je .failed
 
-.loop_args_skip_comma
+.loop_args_skip_comma:
+    mov rdi, [rbp-8]
+    call parser_skip_space
+
+    mov qword [rbp-32], 1
+
     mov rdi, [rbp-8]
     call parse_expr
     mov [rbp-24], rax
@@ -309,7 +321,91 @@ parse_statement:
     ret
 
 ;;; rdi: *parser
+;;; expr (+|- expr)*
 parse_expr:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32
+
+    mov qword [rbp-32], 0       ; tmp_return
+    mov qword [rbp-24], 0       ; return
+    mov qword [rbp-16], 0       ; u64, initial offset
+    mov [rbp-8], rdi            ; *parser
+
+    call parser_get_index
+    mov [rbp-16], rax
+
+    ;;
+    mov rdi, [rbp-8]
+    call parse_expr_primitive
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    mov rdi, rax
+    call runtime_print_uint64
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    jne .failed
+
+.loop:
+    mov rdi, [rbp-8]
+    call parser_skip_space
+
+    mov rdi, [rbp-8]
+    call parse_minus
+    cmp rax, 0
+    jne .found_mid_op_minus
+
+    mov rdi, [rbp-8]
+    call parse_plus
+    cmp rax, 0
+    jne .found_mid_op_plus
+
+    jmp .break
+
+.found_mid_op_minus:
+.found_mid_op_plus:
+.found_mid_op:
+    mov rdi, [rbp-8]
+    call parser_skip_space
+
+    ;; expr
+    mov rdi, [rbp-8]
+    call parse_expr
+    mov [rbp-32], rax           ; tmp_return
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    jne .failed
+
+    jmp .loop
+
+.break:
+    mov rdi, [rbp-24]
+    call sexp_print
+
+    mov rax, [rbp-24]
+    jmp .ok
+
+.failed:
+    ;; revert
+    mov rdi, [rbp-8]
+    mov rsi, [rbp-16]
+    call parser_move_offset
+
+    mov rdi, [rbp-8]
+    call parser_set_failed
+
+.ok:
+    leave
+    ret
+
+;;;
+parse_expr_primitive:
     push rbp
     mov rbp, rsp
     sub rsp, 24
@@ -331,6 +427,19 @@ parse_expr:
     cmp rax, 0
     je .succeeded_string
 
+    ;; symbol
+    mov rdi, [rbp-8]
+    call parser_reset_failed
+
+    mov rdi, [rbp-8]
+    call parse_symbol
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    je .succeeded_symbol
+
     ;; integer
     mov rdi, [rbp-8]
     call parser_reset_failed
@@ -347,6 +456,7 @@ parse_expr:
     ;; failed...
     jmp .failed
 
+.succeeded_symbol:
 .succeeded_string:
 .succeeded_integer:
 .succeeded:
@@ -362,9 +472,13 @@ parse_expr:
     mov rsi, [rbp-16]
     call parser_move_offset
 
+    mov rdi, [rbp-8]
+    call parser_set_failed
+
 .ok:
     leave
     ret
+
 
 ;;; rdi:
 ;;; rsi:
@@ -413,6 +527,37 @@ parse_newline:
     ret
 
 ;;; rdi:
+parse_newline_or_term:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 16
+
+    mov qword [rbp-16], 0             ;
+    mov [rbp-8], rdi            ; *parser
+
+    mov rdi, [rbp-8]
+    call parse_newline
+    mov [rbp-16], rax
+    cmp rax, 0
+    jne .break                  ; found
+
+    mov rdi, [rbp-8]
+    mov rsi, 0x00               ; '\0'
+    call parse_one_char
+    mov [rbp-16], rax
+    cmp rax, 0
+    je .break                   ; not-found
+
+    ;;
+    mov rdi, [rbp-8]
+    call parser_set_finished
+
+.break:
+    mov rax, [rbp-16]
+    leave
+    ret
+
+;;; rdi:
 parse_colon:
     mov rsi, 0x3a               ; ':'
     call parse_one_char
@@ -421,6 +566,24 @@ parse_colon:
 ;;; rdi:
 parse_comma:
     mov rsi, 0x2c               ; ','
+    call parse_one_char
+    ret
+
+;;; rdi:
+parse_double_quote:
+    mov rsi, 0x22               ; '\"'
+    call parse_one_char
+    ret
+
+;;; rdi:
+parse_minus:
+    mov rsi, 0x2d               ; '-'
+    call parse_one_char
+    ret
+
+;;; rdi:
+parse_plus:
+    mov rsi, 0x2b               ; '+'
     call parse_one_char
     ret
 
@@ -436,6 +599,7 @@ parse_symbol:
 
     mov rdi, [rbp-8]
     call parser_get_index
+    mov [rbp-16], rax
     mov r10, rax
 
 .loop:
@@ -443,6 +607,9 @@ parse_symbol:
     call parser_get_char
 
     cmp al, 0x5f                ; '_'
+    je .ok
+
+    cmp al, 0x24                ; '$'
     je .ok
 
     ;; al >= 'A' && al <= 'Z'
@@ -505,8 +672,7 @@ parse_symbol:
     call parser_move_offset
 
     mov rdi, [rbp-8]
-    mov rsi, 1
-    call parser_change_failed
+    call parser_set_failed
 
 .finalize:
     leave
@@ -516,15 +682,39 @@ parse_symbol:
 parse_string:
     push rbp
     mov rbp, rsp
-    sub rsp, 16
+    sub rsp, 24
 
+    mov qword [rbp-24], 0       ; result
     mov qword [rbp-16], 0       ; u64, initial offset
     mov [rbp-8], rdi            ; *parser
 
     call parser_get_index
     mov [rbp-16], rax
 
-    jmp .finalize
+    ;;
+    mov rdi, [rbp-8]
+    call parse_double_quote
+    cmp rax, 0
+    je .not_matched             ;
+
+    ;; "abc"
+    ;;  ^
+    mov rdi, [rbp-8]
+    call parser_get_index
+    mov r10, rax
+
+.loop:
+    ;;
+    mov rdi, [rbp-8]
+    call parse_double_quote
+    cmp rax, 0
+    jne .matched
+
+    ;; step contents
+    mov rdi, [rbp-8]
+    call parser_step_char
+
+    jmp .loop
 
 .not_matched:
     ;; revert
@@ -533,8 +723,27 @@ parse_string:
     call parser_move_offset
 
     mov rdi, [rbp-8]
-    mov rsi, 1
-    call parser_change_failed
+    call parser_set_failed
+
+    jmp .finalize
+
+.matched:
+    mov rdi, [rbp-8]
+    call parser_get_index
+    mov rcx, rax
+    dec rcx                     ; "
+
+    sub rcx, r10                ; begin - end
+
+    mov rdi, [rbp-8]
+    call parser_get_buffer
+    mov rdi, rax
+    add rdi, r10
+    mov rsi, rcx
+    call sexp_alloc_string
+    mov qword [rbp-24], rax
+
+    mov rax, qword [rbp-24]
 
 .finalize:
     leave
@@ -577,7 +786,9 @@ parse_integer:
     cmp al, 120                 ; 'x'
     je .hex_digit
 
-    jmp .not_matched
+    ;; only-zero
+    mov qword [rbp-64], 1
+    jmp .out_of_char
 
 .hex_digit:
     mov qword [rbp-32], 16       ; radix
@@ -591,19 +802,20 @@ parse_integer:
 
     mov r10, 0                  ; last hex (NOT)
     ;; al >= '0' && al <= '9'
-    ;; al-'0' <= '9'-'0'(9)
+    ;; al-'0' <= 9('9'-'0')
     mov cl, al
     sub cl, 48                  ; '0'
     cmp cl, 9
     jbe .ok
 
+    ;;
     mov rdi, qword [rbp-32]
     cmp rdi, 16
     jne .out_of_char
 
     mov r10, 1                  ; last hex
     ;; al >= 'a' && al <= 'f'
-    ;; al-'a' <= 'f'-'a'(5)
+    ;; al-'a' <= 5('f'-'a')
     mov cl, al
     sub cl, 0x61                  ; 'a'
     cmp cl, 5
@@ -676,7 +888,7 @@ parse_integer:
     dec rcx
     jmp .sum_loop
 
-.sum_finish
+.sum_finish:
     mov rdi, [rbp-40]
     call sexp_alloc_int
 
@@ -689,8 +901,7 @@ parse_integer:
     call parser_move_offset
 
     mov rdi, [rbp-8]
-    mov rsi, 1
-    call parser_change_failed
+    call parser_set_failed
 
 .finalize:
     leave
@@ -740,20 +951,35 @@ parser_get_char:
 
 ;;; rdi: *parser
 parser_is_failed:
-    mov rax, [rdi+16]           ; failed
-    and rax, 0x00000001
-    ret
-
-;;; rdi: *parser
-;;; rsi: bool
-parser_change_failed:
-    mov [rdi+16], rsi
+    mov rax, [rdi+16]           ; status
+    and rax, 0x0000000000000001
     ret
 
 ;;; rdi: *parser
 parser_reset_failed:
-    mov rsi, 0
-    call parser_change_failed
+    mov rax, [rdi+16]           ; status
+    and rax, 0xfffffffffffffffe ; mask failed
+    mov [rdi+16], rax
+    ret
+
+;;; rdi: *parser
+parser_set_failed:
+    mov rax, [rdi+16]           ; status
+    or rax, 0x0000000000000001
+    mov [rdi+16], rax
+    ret
+
+;;; rdi: *parser
+parser_is_finished:
+    mov rax, [rdi+16]           ; status
+    and rax, 0x00000002
+    ret
+
+;;; rdi: *parser
+parser_set_finished:
+    mov rax, [rdi+16]           ; status
+    or rax, 0x00000002
+    mov [rdi+16], rax
     ret
 
 ;;; rdi: *parser
@@ -900,6 +1126,9 @@ sexp_print:
 
     mov [rbp-8], rdi            ; *value
 
+    mov rdi, str_paren_l
+    call runtime_print_string
+
     mov rax, [rbp-8]
     cmp rax, 0
     je .print_nil
@@ -943,6 +1172,9 @@ sexp_print:
     jmp .finalize
 
 .finalize:
+    mov rdi, str_paren_r
+    call runtime_print_string
+
     leave
     ret
 
@@ -1075,6 +1307,9 @@ text_sexp_int:  db "int", 0
 text_sexp_string:  db "string", 0
 text_error_failed_to_parse: db "Failed to parse", 0
 text_lf:     db 0x0a, 0
+
+str_paren_l:    db "(", 0
+str_paren_r:    db ")", 0
 
 section_rodata_end:
     ;; --< rodata
