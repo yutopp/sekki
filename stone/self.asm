@@ -196,6 +196,9 @@ parse_code:
     cmp rax, 0
     jne .failed
 
+    ;; debug
+    mov rdi, str_debug_aroow_r
+    call runtime_print_string
     mov rdi, [rbp-40]
     call sexp_print
     call runtime_print_newline
@@ -226,10 +229,6 @@ parse_code:
     call runtime_exit
 
 .finished:
-    mov rdi, str_debug_finished
-    call runtime_print_string
-    call runtime_print_newline
-
     ;; TODO
     mov rdi, [rbp-56]           ; labels
     call sexp_print
@@ -270,7 +269,7 @@ parse_statement:
 
     ;; label-statement
     mov rdi, [rbp-8]
-    call parse_label
+    call parse_label_statement
     mov [rbp-24], rax
 
     mov rdi, [rbp-8]
@@ -709,12 +708,12 @@ parse_expr_primitive:
     cmp rax, 0
     je .succeeded_string
 
-    ;; symbol
+    ;; label
     mov rdi, [rbp-8]
     call parser_reset_failed
 
     mov rdi, [rbp-8]
-    call parse_symbol
+    call parse_label
     mov [rbp-24], rax
 
     mov rdi, [rbp-8]
@@ -1363,9 +1362,8 @@ parse_reg:
     leave
     ret
 
-
 ;;;
-parse_label:
+parse_label_statement:
     push rbp
     mov rbp, rsp
     sub rsp, 24
@@ -1377,17 +1375,9 @@ parse_label:
     call parser_get_index
     mov [rbp-16], rax
 
+    ;; label
     mov rdi, [rbp-8]
-    call parse_dot
-    cmp rax, 0
-    je .skip
-
-    ;; local-label
-
-.skip:
-    ;; symbol
-    mov rdi, [rbp-8]
-    call parse_symbol
+    call parse_label
     mov [rbp-24], rax
 
     mov rdi, [rbp-8]
@@ -1404,6 +1394,58 @@ parse_label:
     call parse_colon
     cmp rax, 0
     je .failed
+
+    jmp .ok
+
+.failed:
+    ;; revert
+    mov rdi, [rbp-8]
+    mov rsi, [rbp-16]
+    call parser_move_offset
+
+    mov rdi, [rbp-8]
+    call parser_set_failed
+
+    jmp .break
+
+.ok:
+    mov rax, [rbp-24]
+
+.break:
+    leave
+    ret
+
+
+;;;
+parse_label:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 24
+
+    mov qword [rbp-24], 0       ; node
+    mov qword [rbp-16], 0       ; u64, initial offset
+    mov [rbp-8], rdi            ; *parser
+
+    call parser_get_index
+    mov [rbp-16], rax
+
+    ;; .
+    mov rdi, [rbp-8]
+    call parse_dot
+    cmp rax, 0
+    je .skip
+
+    ;; local-label
+
+.skip:
+    ;; symbol
+    mov rdi, [rbp-8]
+    call parse_symbol
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    jne .failed
 
     jmp .ok
 
@@ -2224,6 +2266,7 @@ str_ice_unsupported_size:   db "ICE: Unsupported size", 0
 str_inst_db:    db "db", 0
 str_inst_dq:    db "dq", 0
 
+str_debug_aroow_r:  db "->", 0
 str_debug_finished: db "[DEBUG] finished", 0
 str_debug_failed_to_parse_addr: db "[DEBUG] Failed to parse addr", 0
 
