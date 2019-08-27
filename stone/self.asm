@@ -3,7 +3,7 @@
 
 segment_align:  equ 0x1000
 
-app_max_code_buffer_size:   equ 0x8000
+app_max_code_buffer_size:   equ 0x10000
 app_max_asm_buffer_size:    equ 0x8000
 app_max_sexp_objects_count: equ 2000
 
@@ -136,13 +136,16 @@ load_code_from_stdin:
     mov rsi, g_code_buffer
     mov rdx, app_max_code_buffer_size
     syscall
+
+    mov [g_code_size], rax
+
     ret
 
 print_loaded_code_to_stdout:
     mov rax, 1                  ; 1 - write
     mov rdi, 1                  ; fd 1 - stdout
     mov rsi, g_code_buffer
-    mov rdx, app_max_code_buffer_size
+    mov rdx, [g_code_size]
     syscall
     ret
 
@@ -199,7 +202,7 @@ parse_code:
 
     lea rdi, [rbp-56]           ; asm
     mov rsi, [rbp-40]           ; statement
-    call asm_process_statement
+    ; call asm_process_statement
 
     mov rdi, [rbp-8]
     call parser_is_finished
@@ -223,6 +226,10 @@ parse_code:
     call runtime_exit
 
 .finished:
+    mov rdi, str_debug_finished
+    call runtime_print_string
+    call runtime_print_newline
+
     ;; TODO
     mov rdi, [rbp-56]           ; labels
     call sexp_print
@@ -261,11 +268,21 @@ parse_statement:
     cmp rax, 0
     jne .succeeded
 
-    ;; Reset failure of colon parsing
+    ;; label-statement
+    mov rdi, [rbp-8]
+    call parse_label
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    je .label_found
+
+    ;; operation-statement
+    ;; Reset failure of label-parsing
     mov rdi, [rbp-8]
     call parser_reset_failed
 
-    ;; label-statement OR operation-statement
     mov rdi, [rbp-8]
     call parse_symbol
     mov [rbp-24], rax
@@ -277,18 +294,6 @@ parse_statement:
 
     mov rdi, [rbp-24]
     call sexp_print
-
-    mov rdi, [rbp-8]
-    call parser_skip_space
-
-    mov rdi, [rbp-8]
-    call parse_colon
-    cmp rax, 0
-    jne .label_found
-
-    ;; Reset failure of colon parsing
-    mov rdi, [rbp-8]
-    call parser_reset_failed
 
 .loop_args:
     mov rdi, [rbp-8]
@@ -394,8 +399,208 @@ parse_statement:
     ret
 
 ;;; rdi: *parser
-;;; expr (+|- expr)*
 parse_expr:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32
+
+    mov qword [rbp-32], 0       ; tmp_return
+    mov qword [rbp-24], 0       ; return
+    mov qword [rbp-16], 0       ; u64, initial offset
+    mov [rbp-8], rdi            ; *parser
+
+    call parser_get_index
+    mov [rbp-16], rax
+
+    mov rdi, [rbp-8]
+    call parser_skip_space
+
+    ;; addressing
+    mov rdi, [rbp-8]
+    call parse_addressing
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    je .break
+
+    ;; reg or constant-expr
+    mov rdi, [rbp-8]
+    call parser_reset_failed
+
+    mov rdi, [rbp-8]
+    call parse_constant_expr
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    je .break
+
+    jne .failed
+
+.break:
+    mov rdi, [rbp-24]
+    call sexp_print
+
+    mov rax, [rbp-24]
+    jmp .ok
+
+.failed:
+    ;; revert
+    ;mov rdi, [rbp-8]
+    ;mov rsi, [rbp-16]
+    ;call parser_move_offset
+
+    mov rdi, [rbp-8]
+    call parser_set_failed
+
+.ok:
+    leave
+    ret
+
+
+;;; rdi: *parser
+parse_addressing:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 40
+
+    mov qword [rbp-40], 0       ; expected-size. 0 is unknown
+    mov qword [rbp-32], 0       ; kind, 0 = reg, 1 = reg +|- disp, 2 = disp
+    mov qword [rbp-24], 0       ; return
+    mov qword [rbp-16], 0       ; u64, initial offset
+    mov [rbp-8], rdi            ; *parser
+
+    call parser_get_index
+    mov [rbp-16], rax
+
+    ;; addressing
+
+    mov rdi, [rbp-8]
+    call parse_size
+    mov qword [rbp-40], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    jne .failed
+
+    ;;
+    mov rdi, [rbp-8]
+    call parser_skip_space
+
+    ;; [
+    mov rdi, [rbp-8]
+    call parse_bracket_l
+    cmp rax, 0
+    je .failed
+
+.reg:
+    ;; reg
+    mov rdi, [rbp-8]
+    call parse_reg
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    jne .expect_only_disp       ; skip
+
+    mov rdi, [rbp-8]
+    call parser_skip_space
+
+    ;; reg +|- disp
+    mov rdi, [rbp-8]
+    call parser_skip_space
+
+    ;; -
+    mov rdi, [rbp-8]
+    call parse_minus
+    cmp rax, 0
+    jne .found_mid_op_minus
+
+    ;; +
+    mov rdi, [rbp-8]
+    call parse_plus
+    cmp rax, 0
+    jne .found_mid_op_plus
+
+    ;; reg
+    mov qword [rbp-32], 0       ; disp
+    jmp .enclose
+
+.found_mid_op_minus:
+.found_mid_op_plus:
+    mov rdi, [rbp-8]
+    call parser_skip_space
+
+    ;; disp
+    mov rdi, [rbp-8]
+    call parse_expr_primitive
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    jne .failed
+
+    mov qword [rbp-32], 1       ; reg+disp
+    jmp .enclose
+
+.expect_only_disp:
+    ;; Reset failure
+    mov rdi, [rbp-8]
+    call parser_reset_failed
+
+    ;; disp
+    mov rdi, [rbp-8]
+    call parse_expr_primitive
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    jne .failed
+
+    mov qword [rbp-32], 2       ; disp
+
+.enclose:
+    ;;
+    mov rdi, [rbp-8]
+    call parser_skip_space
+
+    ;; ]
+    mov rdi, [rbp-8]
+    call parse_bracket_r
+    cmp rax, 0
+    je .failed
+
+.break:
+    mov rdi, [rbp-24]
+    call sexp_print
+
+    mov rax, [rbp-24]
+    jmp .ok
+
+.failed:
+    ;; revert
+    mov rdi, [rbp-8]
+    mov rsi, [rbp-16]
+    call parser_move_offset
+
+    mov rdi, [rbp-8]
+    call parser_set_failed
+
+.ok:
+    leave
+    ret
+
+
+;;; rdi: *parser
+;;; expr (+|- expr)*
+parse_constant_expr:
     push rbp
     mov rbp, rsp
     sub rsp, 32
@@ -427,11 +632,13 @@ parse_expr:
     mov rdi, [rbp-8]
     call parser_skip_space
 
+    ;; -
     mov rdi, [rbp-8]
     call parse_minus
     cmp rax, 0
     jne .found_mid_op_minus
 
+    ;; +
     mov rdi, [rbp-8]
     call parse_plus
     cmp rax, 0
@@ -478,6 +685,8 @@ parse_expr:
     ret
 
 ;;;
+;;; (N, value) where S(32bits):N(32bits) == 0
+;;;                                       |
 parse_expr_primitive:
     push rbp
     mov rbp, rsp
@@ -530,8 +739,14 @@ parse_expr_primitive:
     jmp .failed
 
 .succeeded_symbol:
+    jmp .succeeded
+
 .succeeded_string:
+    jmp .succeeded
+
 .succeeded_integer:
+    jmp .succeeded
+
 .succeeded:
     mov rdi, [rbp-24]
     call sexp_print
@@ -637,6 +852,12 @@ parse_colon:
     ret
 
 ;;; rdi:
+parse_dot:
+    mov rsi, 0x2e               ; '.'
+    call parse_one_char
+    ret
+
+;;; rdi:
 parse_comma:
     mov rsi, 0x2c               ; ','
     call parse_one_char
@@ -657,6 +878,18 @@ parse_minus:
 ;;; rdi:
 parse_plus:
     mov rsi, 0x2b               ; '+'
+    call parse_one_char
+    ret
+
+;;; rdi:
+parse_bracket_l:
+    mov rsi, 0x5b               ; '['
+    call parse_one_char
+    ret
+
+;;; rdi:
+parse_bracket_r:
+    mov rsi, 0x5d               ; ']'
     call parse_one_char
     ret
 
@@ -979,6 +1212,219 @@ parse_integer:
 .finalize:
     leave
     ret
+
+
+;;;
+parse_size:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 24
+
+    mov qword [rbp-24], 0       ; node | hash
+    mov qword [rbp-16], 0       ; u64, initial offset
+    mov [rbp-8], rdi            ; *parser
+
+    call parser_get_index
+    mov [rbp-16], rax
+
+    ;;
+    mov rdi, [rbp-8]
+    call parser_skip_space
+
+    ;;
+    mov rdi, [rbp-8]
+    call parse_symbol
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    jne .skip
+
+    ;;
+    mov rdi, [rbp-24]           ; symbol
+    call sexp_internal_string_length
+    cmp rax, 8
+    jg .failed
+
+    ;;
+    mov rdi, [rbp-24]           ; symbol
+    call sexp_value_string_as_hash
+    mov [rbp-24], rax           ; hash
+
+    ;; qword
+    mov rdi, str_size_qword
+    call runtime_string_hash
+    mov rdi, [rbp-24]
+    cmp rdi, rax
+    je .qword
+
+    ;; failed...
+    jmp .failed
+
+.qword:
+    mov rax, 8                  ; sizeof(qword) = 8
+    jmp .break
+
+.failed:
+    ;; revert
+    mov rdi, [rbp-8]
+    mov rsi, [rbp-16]
+    call parser_move_offset
+
+    mov rdi, [rbp-8]
+    call parser_set_failed
+
+    jmp .break
+
+.skip:
+    ;; Reset failure of symbol parsing
+    mov rdi, [rbp-8]
+    call parser_reset_failed
+
+    mov rdi, [rbp-8]
+    mov rsi, [rbp-16]
+    call parser_move_offset
+
+    xor rax, rax                ; 0, unknown-size
+
+.break:
+    leave
+    ret
+
+
+;;;
+parse_reg:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 24
+
+    mov qword [rbp-24], 0       ; node
+    mov qword [rbp-16], 0       ; u64, initial offset
+    mov [rbp-8], rdi            ; *parser
+
+    call parser_get_index
+    mov [rbp-16], rax
+
+    ;;
+    mov rdi, [rbp-8]
+    call parser_skip_space
+
+    ;;
+    mov rdi, [rbp-8]
+    call parse_symbol
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    jne .failed
+
+    ;;
+    mov rdi, [rbp-24]           ; symbol
+    call sexp_internal_string_length
+    cmp rax, 8
+    jg .failed
+
+    ;;
+    mov rdi, [rbp-24]           ; symbol
+    call sexp_value_string_as_hash
+    mov [rbp-24], rax           ; hash
+
+    ;; rbp
+    mov rdi, str_reg_rbp
+    call runtime_string_hash
+    mov rdi, [rbp-24]
+    cmp rdi, rax
+    je .ok
+
+    ;; failed...
+    jmp .failed
+
+.qword:
+    mov rax, 8                  ; sizeof(qword) = 8
+    jmp .break
+
+.failed:
+    ;; revert
+    mov rdi, [rbp-8]
+    mov rsi, [rbp-16]
+    call parser_move_offset
+
+    mov rdi, [rbp-8]
+    call parser_set_failed
+
+    jmp .break
+
+.ok:
+    mov rax, [rbp-24]
+
+.break:
+    leave
+    ret
+
+
+;;;
+parse_label:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 24
+
+    mov qword [rbp-24], 0       ; node
+    mov qword [rbp-16], 0       ; u64, initial offset
+    mov [rbp-8], rdi            ; *parser
+
+    call parser_get_index
+    mov [rbp-16], rax
+
+    mov rdi, [rbp-8]
+    call parse_dot
+    cmp rax, 0
+    je .skip
+
+    ;; local-label
+
+.skip:
+    ;; symbol
+    mov rdi, [rbp-8]
+    call parse_symbol
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    jne .failed
+
+    ;;
+    mov rdi, [rbp-8]
+    call parser_skip_space
+
+    ;;
+    mov rdi, [rbp-8]
+    call parse_colon
+    cmp rax, 0
+    je .failed
+
+    jmp .ok
+
+.failed:
+    ;; revert
+    mov rdi, [rbp-8]
+    mov rsi, [rbp-16]
+    call parser_move_offset
+
+    mov rdi, [rbp-8]
+    call parser_set_failed
+
+    jmp .break
+
+.ok:
+    mov rax, [rbp-24]
+
+.break:
+    leave
+    ret
+
 
 ;;; rdi: *parser
 parser_get_index:
@@ -1711,7 +2157,7 @@ runtime_string_view_hash:
     jmp .loop
 
 .failed:
-    mov rdi, rsi
+    mov rdi, 2
     call runtime_exit
     jmp .break
 
@@ -1728,7 +2174,7 @@ runtime_exit:
 section_text_end:
     ;; --< bss
 
-code_segment_rest_size: equ ($-code_segment_begin)
+code_segment_rest_size: equ $-code_segment_begin
     align segment_align
 code_segment_end:
 
@@ -1741,6 +2187,7 @@ section_bss_begin:
 ret_code:   dq 42
 
 g_code_buffer:  times app_max_code_buffer_size db 0
+g_code_size:    dq 0
 
 g_asm_buffer:  times app_max_asm_buffer_size db 0
 g_asm_buffer_size:  dq 0
@@ -1766,6 +2213,9 @@ str_paren_r:    db ")", 0
 str_colon:      db ":", 0
 str_comma:      db ",", 0
 
+str_reg_rbp:    db "rbp", 0
+str_size_qword: db "qword", 0
+
 str_ice_invalid_statement:  db "ICE: Invalid statement", 0
 str_ice_invalid_inst:       db "ICE: Invalid inst", 0
 str_ice_invalid_type:       db "ICE: Invalid type", 0
@@ -1773,6 +2223,9 @@ str_ice_unsupported_size:   db "ICE: Unsupported size", 0
 
 str_inst_db:    db "db", 0
 str_inst_dq:    db "dq", 0
+
+str_debug_finished: db "[DEBUG] finished", 0
+str_debug_failed_to_parse_addr: db "[DEBUG] Failed to parse addr", 0
 
 section_rodata_end:
     ;; --< rodata
