@@ -4,7 +4,7 @@
 segment_align:  equ 0x1000
 
 app_max_code_buffer_size:   equ 0x8000
-app_max_out_buffer_size:    equ 0x8000
+app_max_asm_buffer_size:    equ 0x8000
 app_max_sexp_objects_count: equ 2000
 
 ;;; ELF Header
@@ -149,8 +149,14 @@ print_loaded_code_to_stdout:
 parse_code:
     push rbp
     mov rbp, rsp
-    sub rsp, 40
+    sub rsp, 56
 
+    ;; asm {
+    ;;   sexp* labels
+    ;;   sexp* replacements
+    ;; }
+    mov qword [rbp-56], 0       ; nil
+    mov qword [rbp-48], 0       ; nil
     mov qword [rbp-40], 0       ; return
     ;; parser {
     ;;   char* buffer
@@ -183,14 +189,16 @@ parse_code:
     call sexp_print
     call runtime_print_newline
 
+    lea rdi, [rbp-56]           ; asm
+    mov rsi, [rbp-40]           ; statement
+    call asm_process_statement
+
     mov rdi, [rbp-8]
     call parser_is_finished
     cmp rax, 0
     jne .finished
 
     jmp .loop
-;    mov rax, [rbp-40]
-;    jmp .ok
 
 .failed:
     mov rdi, text_error_failed_to_parse
@@ -207,6 +215,10 @@ parse_code:
     call runtime_exit
 
 .finished:
+    ;; TODO
+    mov rdi, [rbp-56]           ; labels
+    call sexp_print
+
 .ok:
     leave
     ret
@@ -342,7 +354,7 @@ parse_statement:
     mov rdi, rax                ; (1, value)
     mov rsi, [rbp-40]           ; (args...) | nil
     call sexp_alloc_cons
-    mov [rbp-24], rax           ; ((0, value), (args...) | nil)
+    mov [rbp-24], rax           ; ((1, value), (args...) | nil)
     jmp .succeeded
 
 .label_found:
@@ -1108,6 +1120,83 @@ parser_skip_unlil_lf:
     leave
     ret
 
+
+;;; rdi: asm*
+;;; rsi: sexp* statement
+asm_process_statement:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 40
+
+    mov qword [rbp-40], 0       ; tmp
+    mov qword [rbp-32], 0       ; args
+    mov qword [rbp-24], 0       ; symbol
+    mov [rbp-16], rsi           ; sexp* statement
+    mov [rbp-8], rdi            ; asm*
+
+    ;; nil
+    ;; ((0, value), nil)
+    ;; ((1, value), (args...) | nil)
+
+    mov rdi, [rbp-16]
+    cmp rdi, 0
+    je .break
+
+    call sexp_car               ; (N, value) as car
+    mov [rbp-40], rax
+
+    mov rdi, [rbp-16]
+    call sexp_cdr               ; nil | (args...) as cdr
+    mov [rbp-32], rax
+
+    mov rdi, [rbp-40]
+    call sexp_cdr               ; value
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-40]
+    call sexp_car               ; N
+    mov rdi, rax
+    call sexp_value_int
+
+    cmp rax, 0
+    je .label
+
+    cmp rax, 1
+    je .inst
+
+    mov rdi, str_ice_invalid_statement
+    call runtime_print_string
+
+    mov rdi, 1
+    call runtime_exit
+
+.label:
+    mov rdi, [g_asm_buffer_size] ; loc
+    call sexp_alloc_int
+
+    mov rdi, [rbp-24]            ; value
+    mov rsi, rax
+    call sexp_alloc_cons         ; (value, loc)
+
+    ;; prepend the label. e.g. ((b, 0), ((a, 1), nil))
+    mov rdi, rax                ; (value, loc)
+    mov rcx, [rbp-8]            ; asm*
+    mov rcx, [rcx]              ; asm.labels
+    mov rsi, rcx                ; asm.labels
+    call sexp_alloc_cons        ; ((value, loc), asm.labels)
+
+    ;; update labels
+    mov rcx, [rbp-8]            ; asm*
+    mov [rcx], rax              ; asm.labels <- ((value, loc), asm.labels)
+    jmp .break
+
+.inst:
+
+.break:
+    leave
+    ret
+
+
 ;;;
 ;;; struct value {
 ;;;   u64       tag; (0: int, 1: string)
@@ -1180,6 +1269,21 @@ sexp_alloc_cons:
     mov [rcx+8], rdi
     mov [rcx+16], rsi
 
+    ret
+
+;;; rdi: *value cons
+sexp_value_int:
+    mov rax, [rdi+8]
+    ret
+
+;;; rdi: *value cons
+sexp_car:
+    mov rax, [rdi+8]
+    ret
+
+;;; rdi: *value cons
+sexp_cdr:
+    mov rax, [rdi+16]
     ret
 
 
@@ -1385,8 +1489,8 @@ ret_code:   dq 42
 
 g_code_buffer:  times app_max_code_buffer_size db 0
 
-g_out_buffer:  times app_max_out_buffer_size db 0
-g_out_buffer_size:  dq 0
+g_asm_buffer:  times app_max_asm_buffer_size db 0
+g_asm_buffer_size:  dq 0
 
 g_sexp_objects:  resb 24 * app_max_sexp_objects_count
 g_sexp_objects_count:  dq 0
@@ -1408,6 +1512,8 @@ str_paren_l:    db "(", 0
 str_paren_r:    db ")", 0
 str_colon:      db ":", 0
 str_comma:      db ",", 0
+
+str_ice_invalid_statement:    db "ICE: Invalid statement", 0
 
 section_rodata_end:
     ;; --< rodata
