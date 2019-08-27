@@ -1166,7 +1166,7 @@ asm_process_statement:
     mov rdi, [rbp-40]
     call sexp_car               ; N
     mov rdi, rax
-    call sexp_value_int
+    call sexp_internal_int_value
 
     cmp rax, 0
     je .label
@@ -1243,9 +1243,9 @@ asm_process_statement:
     mov rdi, [rbp-40]
     call sexp_car
 
-    mov rdi, rax
-    mov rsi, 1
-    call asm_write_value
+    mov rdi, rax                ; sexp*
+    mov rsi, 1                  ; size
+    call asm_write_sexp
 
     mov rdi, [rbp-40]
     call sexp_cdr
@@ -1261,13 +1261,107 @@ asm_process_statement:
     ret
 
 
-;;;
+;;; rdi: sexp*
+;;; rsi: u64 byte-size
+asm_write_sexp:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32
+
+    mov qword [rbp-32], 0       ; counter
+    mov qword [rbp-24], 0       ; char*
+    mov [rbp-16], rsi           ; byte-size
+    mov [rbp-8], rdi            ; sexp*
+
+    mov rax, [rdi]              ; sexp.tag
+
+    cmp rax, 0
+    je .write_integer
+
+    cmp rax, 1
+    je .write_string
+
+    ;; Failed
+    mov rdi, str_ice_invalid_type
+    call runtime_print_string
+
+    call runtime_print_newline
+
+    mov rdi, 1
+    call runtime_exit
+
+.write_integer:
+    mov rdi, [rbp-8]
+    call sexp_internal_int_value
+;
+    mov rdi, rax                ; int-value
+    mov rsi, [rbp-16]           ; byte-size
+    call asm_write_value
+    jmp .break
+
+.write_string:
+    mov rdi, [rbp-8]
+    call sexp_internal_string_ptr
+    mov [rbp-24], rax           ; char*
+
+    mov rdi, [rbp-8]
+    call sexp_internal_string_length
+    mov  [rbp-32], rax          ; counter
+
+.write_string_loop:
+    mov rcx, [rbp-32]           ; counter
+    cmp rcx, 0
+    je .break
+
+    mov rdi, [rbp-24]           ; char*
+    mov rdi, [rdi]              ; *(char*)
+    and rdi, 0xff
+    mov rsi, [rbp-16]           ; byte-size
+    call asm_write_value
+
+    mov rax, [rbp-24]           ; char*
+    inc rax
+    mov [rbp-24], rax
+
+    mov rcx, [rbp-32]           ; counter
+    dec rcx
+    mov [rbp-32], rcx           ; counter
+
+    jmp .write_string_loop
+
+.break:
+    leave
+    ret
+
+
+;;; rdi
+;;; rsi
 asm_write_value:
+    cmp rsi, 1
+    je .u8
+
+    ;; Failed
+    mov rdi, str_ice_unsupported_size
+    call runtime_print_string
+
+    call runtime_print_newline
+
+    mov rdi, 1
+    call runtime_exit
+
+.u8:
+    call asm_write_u8
+    ret
+
+
+;;; rdi
+asm_write_u8:
     mov rax, g_asm_buffer
     mov rcx, [g_asm_buffer_size]
-
+;
     add rax, rcx
-    mov byte [rax], 42
+    mov rdx, rdi
+    mov byte [rax], dl
 
     add rcx, 1
     mov [g_asm_buffer_size], rcx
@@ -1276,7 +1370,7 @@ asm_write_value:
 
 ;;;
 ;;; struct value {
-;;;   u64       tag; (0: int, 1: string)
+;;;   u64       tag; (0: int, 1: string, 2: cons)
 ;;;   union {
 ;;;     u64 unum;
 ;;;     struct {
@@ -1349,8 +1443,18 @@ sexp_alloc_cons:
     ret
 
 ;;; rdi: *value
-sexp_value_int:
+sexp_internal_int_value:
     mov rax, [rdi+8]
+    ret
+
+;;; rdi: *value
+sexp_internal_string_ptr:
+    mov rax, [rdi+8]
+    ret
+
+;;; rdi: *value
+sexp_internal_string_length:
+    mov rax, [rdi+16]
     ret
 
 ;;; rdi: *value
@@ -1591,7 +1695,7 @@ runtime_string_view_hash:
     mov rax, 0
     mov rcx, 0
 
-.loop
+.loop:
     cmp rcx, rsi
     je .break
 
@@ -1664,6 +1768,8 @@ str_comma:      db ",", 0
 
 str_ice_invalid_statement:  db "ICE: Invalid statement", 0
 str_ice_invalid_inst:       db "ICE: Invalid inst", 0
+str_ice_invalid_type:       db "ICE: Invalid type", 0
+str_ice_unsupported_size:   db "ICE: Unsupported size", 0
 
 str_inst_db:    db "db", 0
 str_inst_dq:    db "dq", 0
