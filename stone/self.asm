@@ -146,6 +146,14 @@ print_loaded_code_to_stdout:
     syscall
     ret
 
+print_asm_to_stderr:
+    mov rax, 1                  ; 1 - write
+    mov rdi, 2                  ; fd 2 - stderr
+    mov rsi, g_asm_buffer
+    mov rdx, [g_asm_buffer_size]
+    syscall
+    ret
+
 parse_code:
     push rbp
     mov rbp, rsp
@@ -218,6 +226,8 @@ parse_code:
     ;; TODO
     mov rdi, [rbp-56]           ; labels
     call sexp_print
+
+    call print_asm_to_stderr
 
 .ok:
     leave
@@ -1130,7 +1140,7 @@ asm_process_statement:
 
     mov qword [rbp-40], 0       ; tmp
     mov qword [rbp-32], 0       ; args
-    mov qword [rbp-24], 0       ; symbol
+    mov qword [rbp-24], 0       ; symbol (OR hash)
     mov [rbp-16], rsi           ; sexp* statement
     mov [rbp-8], rdi            ; asm*
 
@@ -1174,11 +1184,11 @@ asm_process_statement:
     mov rdi, [g_asm_buffer_size] ; loc
     call sexp_alloc_int
 
-    mov rdi, [rbp-24]            ; value
+    mov rdi, [rbp-24]           ; symbol
     mov rsi, rax
-    call sexp_alloc_cons         ; (value, loc)
+    call sexp_alloc_cons        ; (value, loc)
 
-    ;; prepend the label. e.g. ((b, 0), ((a, 1), nil))
+    ;; prepend the label. e.g. ((b, 10), ((a, 0), nil))
     mov rdi, rax                ; (value, loc)
     mov rcx, [rbp-8]            ; asm*
     mov rcx, [rcx]              ; asm.labels
@@ -1188,14 +1198,81 @@ asm_process_statement:
     ;; update labels
     mov rcx, [rbp-8]            ; asm*
     mov [rcx], rax              ; asm.labels <- ((value, loc), asm.labels)
+
     jmp .break
 
 .inst:
+    mov rdi, [rbp-24]           ; symbol
+    call sexp_print
+
+    mov rdi, [rbp-24]           ; symbol
+    call sexp_value_string_as_hash
+    mov [rbp-24], rax           ; hash
+
+    ;; db
+    mov rdi, str_inst_db
+    call runtime_string_hash
+    mov rdi, [rbp-24]
+    cmp rdi, rax
+    je .inst_db
+
+    ;; dq
+    mov rdi, str_inst_dq
+    call runtime_string_hash
+    mov rdi, [rbp-24]
+    cmp rdi, rax
+    je .inst_dq
+
+    mov rdi, str_ice_invalid_inst
+    call runtime_print_string
+
+    call runtime_print_newline
+
+    mov rdi, 1
+    call runtime_exit
+
+.inst_db:
+    mov rax, [rbp-32]           ; args
+    mov [rbp-40], rax
+
+.loop:
+    mov rax, [rbp-40]           ; args
+    cmp rax, 0
+    je .break
+
+    mov rdi, [rbp-40]
+    call sexp_car
+
+    mov rdi, rax
+    mov rsi, 1
+    call asm_write_value
+
+    mov rdi, [rbp-40]
+    call sexp_cdr
+    mov [rbp-40], rax
+
+    jmp .loop
+
+.inst_dq:
+    jmp .break
 
 .break:
     leave
     ret
 
+
+;;;
+asm_write_value:
+    mov rax, g_asm_buffer
+    mov rcx, [g_asm_buffer_size]
+
+    add rax, rcx
+    mov byte [rax], 42
+
+    add rcx, 1
+    mov [g_asm_buffer_size], rcx
+
+    ret
 
 ;;;
 ;;; struct value {
@@ -1271,9 +1348,22 @@ sexp_alloc_cons:
 
     ret
 
-;;; rdi: *value cons
+;;; rdi: *value
 sexp_value_int:
     mov rax, [rdi+8]
+    ret
+
+;;; rdi: *value
+sexp_value_string_as_hash:
+    push rbp
+    mov rbp, rsp
+
+    mov rax, rdi
+    mov rdi, [rax+8]
+    mov rsi, [rax+16]
+    call runtime_string_view_hash
+
+    leave
     ret
 
 ;;; rdi: *value cons
@@ -1354,6 +1444,10 @@ sexp_print:
 
     mov rdi, text_sexp_string
     call runtime_print_string
+
+    mov rax, [rbp-8]
+    mov rdi, [rax+16]
+    call runtime_print_uint64
 
     jmp .finalize
 
@@ -1468,6 +1562,61 @@ runtime_strlen:
     ret
 
 
+;;; rdi: char*
+runtime_string_hash:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 8
+
+    mov [rbp-8], rdi
+
+    call runtime_strlen
+
+    mov rdi, [rbp-8]
+    mov rsi, rax
+    call runtime_string_view_hash
+
+    leave
+    ret
+
+;;; rdi: char*
+;;; rsi: u64 length
+runtime_string_view_hash:
+    push rbp
+    mov rbp, rsp
+
+    cmp rsi, 8
+    jg .failed
+
+    mov rax, 0
+    mov rcx, 0
+
+.loop
+    cmp rcx, rsi
+    je .break
+
+    mov r10, rdi
+    add r10, rcx
+    xor rdx, rdx
+    mov dl, [r10]
+
+    ;; TODO: fix
+    add rax, rdx
+
+    inc rcx
+    jmp .loop
+
+.failed:
+    mov rdi, rsi
+    call runtime_exit
+    jmp .break
+
+.break:
+    leave
+    ret
+
+
+;;;
 runtime_exit:
     mov rax, 60
     syscall
@@ -1513,7 +1662,11 @@ str_paren_r:    db ")", 0
 str_colon:      db ":", 0
 str_comma:      db ",", 0
 
-str_ice_invalid_statement:    db "ICE: Invalid statement", 0
+str_ice_invalid_statement:  db "ICE: Invalid statement", 0
+str_ice_invalid_inst:       db "ICE: Invalid inst", 0
+
+str_inst_db:    db "db", 0
+str_inst_dq:    db "dq", 0
 
 section_rodata_end:
     ;; --< rodata
