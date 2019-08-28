@@ -197,7 +197,8 @@ parse_code:
     jne .failed
 
     ;; debug
-    mov rdi, str_debug_aroow_r
+    call runtime_print_newline
+    mov rdi, str_debug_arrow_r
     call runtime_print_string
     mov rdi, [rbp-40]
     call sexp_print
@@ -616,11 +617,6 @@ parse_constant_expr:
     mov rdi, [rbp-8]
     call parse_expr_primitive
     mov [rbp-24], rax
-
-    mov rdi, [rbp-8]
-    call parser_is_failed
-    mov rdi, rax
-    call runtime_print_uint64
 
     mov rdi, [rbp-8]
     call parser_is_failed
@@ -1441,6 +1437,7 @@ parse_label:
     ;; symbol
     mov rdi, [rbp-8]
     call parse_symbol
+    mov [rbp-24], rax
 
     mov rdi, [rbp-8]
     call parser_is_failed
@@ -2266,7 +2263,7 @@ str_ice_unsupported_size:   db "ICE: Unsupported size", 0
 str_inst_db:    db "db", 0
 str_inst_dq:    db "dq", 0
 
-str_debug_aroow_r:  db "->", 0
+str_debug_arrow_r:  db "->", 0
 str_debug_finished: db "[DEBUG] finished", 0
 str_debug_failed_to_parse_addr: db "[DEBUG] Failed to parse addr", 0
 
