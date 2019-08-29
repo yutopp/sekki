@@ -430,7 +430,7 @@ parse_expr:
     call parser_reset_failed
 
     mov rdi, [rbp-8]
-    call parse_constant_expr
+    call parse_expr_add_sub
     mov [rbp-24], rax
 
     mov rdi, [rbp-8]
@@ -500,7 +500,7 @@ parse_addressing:
 .reg:
     ;; reg
     mov rdi, [rbp-8]
-    call parse_reg
+    call parse_reg_value
     mov [rbp-24], rax
 
     mov rdi, [rbp-8]
@@ -538,7 +538,7 @@ parse_addressing:
 
     ;; disp
     mov rdi, [rbp-8]
-    call parse_expr_primitive
+    call parse_constant_value
     mov [rbp-24], rax
 
     mov rdi, [rbp-8]
@@ -556,7 +556,7 @@ parse_addressing:
 
     ;; disp
     mov rdi, [rbp-8]
-    call parse_expr_primitive
+    call parse_constant_value
     mov [rbp-24], rax
 
     mov rdi, [rbp-8]
@@ -600,7 +600,7 @@ parse_addressing:
 
 ;;; rdi: *parser
 ;;; expr (+|- expr)*
-parse_constant_expr:
+parse_expr_add_sub:
     push rbp
     mov rbp, rsp
     sub rsp, 32
@@ -680,9 +680,67 @@ parse_constant_expr:
     ret
 
 ;;;
+parse_expr_primitive:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 24
+
+    mov qword [rbp-24], 0       ; return
+    mov qword [rbp-16], 0       ; u64, initial offset
+    mov [rbp-8], rdi            ; *parser
+
+    call parser_get_index
+    mov [rbp-16], rax
+
+    ;; register
+    mov rdi, [rbp-8]
+    call parse_reg_value
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    je .succeeded
+
+    ;; constant-value
+    mov rdi, [rbp-8]
+    call parse_constant_value
+    mov [rbp-24], rax
+
+    mov rdi, [rbp-8]
+    call parser_is_failed
+    cmp rax, 0
+    je .succeeded
+
+    ;; failed...
+    jmp .failed
+
+.succeeded:
+    mov rdi, [rbp-24]
+    call sexp_print
+
+    mov rax, [rbp-24]
+    jmp .ok
+
+.failed:
+    ;; revert
+    mov rdi, [rbp-8]
+    mov rsi, [rbp-16]
+    call parser_move_offset
+
+    mov rdi, [rbp-8]
+    call parser_set_failed
+
+    .ok:
+
+    leave
+    ret
+
+
+;;;
 ;;; (N, value) where S(32bits):N(32bits) == 0
 ;;;                                       |
-parse_expr_primitive:
+parse_constant_value:
     push rbp
     mov rbp, rsp
     sub rsp, 24
@@ -1289,12 +1347,13 @@ parse_size:
 
 
 ;;;
-parse_reg:
+parse_reg_value:
     push rbp
     mov rbp, rsp
-    sub rsp, 24
+    sub rsp, 32
 
-    mov qword [rbp-24], 0       ; node
+    mov qword [rbp-32], 0       ; hash
+    mov qword [rbp-24], 0       ; symbol, return-value
     mov qword [rbp-16], 0       ; u64, initial offset
     mov [rbp-8], rdi            ; *parser
 
@@ -1324,21 +1383,31 @@ parse_reg:
     ;;
     mov rdi, [rbp-24]           ; symbol
     call sexp_value_string_as_hash
-    mov [rbp-24], rax           ; hash
+    mov [rbp-32], rax           ; hash
 
     ;; rbp
     mov rdi, str_reg_rbp
     call runtime_string_hash
-    mov rdi, [rbp-24]
+    mov rdi, [rbp-32]
     cmp rdi, rax
-    je .ok
+    je .rbp
 
     ;; failed...
     jmp .failed
 
-.qword:
-    mov rax, 8                  ; sizeof(qword) = 8
-    jmp .break
+.rbp:
+    ;; value-tag
+    ;;         |      ||  ||  |
+    ;;                        1 = register
+    ;;                    1     = rbp
+    ;;                8         = size
+    mov rdi, 0x0000000800010001
+    call sexp_alloc_int
+    mov rdi, rax                ; value-tag
+    mov rsi, [rbp-24]           ; symbol
+    call sexp_alloc_cons
+    mov [rbp-24], rax
+    jmp .ok
 
 .failed:
     ;; revert
@@ -1352,7 +1421,7 @@ parse_reg:
     jmp .break
 
 .ok:
-    mov rax, [rbp-24]
+    mov rax, [rbp-24]           ; return-value
 
 .break:
     leave
