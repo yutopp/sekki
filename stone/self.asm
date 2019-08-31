@@ -465,10 +465,12 @@ parse_expr:
 parse_addressing:
     push rbp
     mov rbp, rsp
-    sub rsp, 40
+    sub rsp, 56
 
+    mov qword [rbp-56], 0       ; op, 0 = add, 1 = minus
+    mov qword [rbp-48], 0       ; tmp-node
     mov qword [rbp-40], 0       ; expected-size. 0 is unknown
-    mov qword [rbp-32], 0       ; kind, 0 = reg, 1 = reg +|- disp, 2 = disp
+    mov qword [rbp-32], 0       ; kind, 0 = reg, 1 = reg +|- disp, 2 = disp-only
     mov qword [rbp-24], 0       ; return
     mov qword [rbp-16], 0       ; u64, initial offset
     mov [rbp-8], rdi            ; *parser
@@ -478,9 +480,10 @@ parse_addressing:
 
     ;; addressing
 
+    ;; size-prefix
     mov rdi, [rbp-8]
     call parse_size
-    mov qword [rbp-40], rax
+    mov qword [rbp-40], rax     ; size = .
 
     mov rdi, [rbp-8]
     call parser_is_failed
@@ -528,10 +531,12 @@ parse_addressing:
     jne .found_mid_op_plus
 
     ;; reg
-    mov qword [rbp-32], 0       ; disp
+    mov qword [rbp-32], 0       ; kind = disp
     jmp .enclose
 
 .found_mid_op_minus:
+    mov qword [rbp-56], 1       ; op
+
 .found_mid_op_plus:
     mov rdi, [rbp-8]
     call parser_skip_space
@@ -539,14 +544,38 @@ parse_addressing:
     ;; disp
     mov rdi, [rbp-8]
     call parse_constant_value
-    mov [rbp-24], rax
+    mov [rbp-48], rax           ; tmp-node
 
     mov rdi, [rbp-8]
     call parser_is_failed
     cmp rax, 0
     jne .failed
 
-    mov qword [rbp-32], 1       ; reg+disp
+    ;; (lhs . rhs)
+    mov rdi, [rbp-24]           ; lhs = reg
+    mov rsi, [rbp-48]           ; rhs = disp
+    call sexp_alloc_cons
+    mov [rbp-24], rax           ; expr-cons
+
+    ;; value-tag
+    ;;         |-----4||-2||-2|
+    ;;         |      ||  ||  |
+    ;;                        6 = expr
+    ;;                    ?     = op: 0 = add, 1 = sub
+    mov rdi, 0x0000000000000006
+
+    mov rax, [rbp-56]           ; op
+    and rax, 0x00000000000000ff
+    shl rax, 16                 ; 2 * 8 bits
+    or rdi, rax                 ; set kind to value-tag
+
+    call sexp_alloc_int
+    mov rdi, rax                ; value-tag
+    mov rsi, [rbp-24]           ; expr-cons
+    call sexp_alloc_cons
+    mov [rbp-24], rax
+
+    mov qword [rbp-32], 1       ; kind = reg+disp
     jmp .enclose
 
 .expect_only_disp:
@@ -564,7 +593,7 @@ parse_addressing:
     cmp rax, 0
     jne .failed
 
-    mov qword [rbp-32], 2       ; disp
+    mov qword [rbp-32], 2       ; kind = disp
 
 .enclose:
     ;;
@@ -577,12 +606,35 @@ parse_addressing:
     cmp rax, 0
     je .failed
 
-.break:
+.succeeded:
     mov rdi, [rbp-24]
     call sexp_print
 
-    mov rax, [rbp-24]
-    jmp .ok
+    ;; value-tag
+    ;;         |-----4||-2||-2|
+    ;;         |      ||  ||  |
+    ;;                        5 = addressing
+    ;;                    ?     = kind
+    ;;                ?         = size
+    mov rdi, 0x0000000000000005
+
+    mov rax, [rbp-32]           ; kind
+    and rax, 0x00000000000000ff
+    shl rax, 16                 ; 2 * 8 bits
+    or rdi, rax                 ; set kind to value-tag
+
+    mov rax, [rbp-40]           ; size
+    and rax, 0x00000000ffffffff
+    shl rax, 32                 ; 4 * 8 bits
+    or rdi, rax                 ; set size to value-tag
+
+    call sexp_alloc_int
+    mov rdi, rax                ; value-tag
+    mov rsi, [rbp-24]           ; addressing expr
+    call sexp_alloc_cons
+    mov [rbp-24], rax
+
+    jmp .break
 
 .failed:
     ;; revert
@@ -593,7 +645,7 @@ parse_addressing:
     mov rdi, [rbp-8]
     call parser_set_failed
 
-.ok:
+.break:
     leave
     ret
 
@@ -703,6 +755,10 @@ parse_expr_primitive:
     je .succeeded
 
     ;; constant-value
+    ;; Reset failure of register parsing
+    mov rdi, [rbp-8]
+    call parser_reset_failed
+
     mov rdi, [rbp-8]
     call parse_constant_value
     mov [rbp-24], rax
@@ -731,8 +787,7 @@ parse_expr_primitive:
     mov rdi, [rbp-8]
     call parser_set_failed
 
-    .ok:
-
+.ok:
     leave
     ret
 
@@ -792,12 +847,45 @@ parse_constant_value:
     jmp .failed
 
 .succeeded_symbol:
+    ;; value-tag
+    ;;         |-----4||-2||-2|
+    ;;         |      ||  ||  |
+    ;;                        2 = label
+    mov rdi, 0x0000000000000002
+    call sexp_alloc_int
+    mov rdi, rax                ; value-tag
+    mov rsi, [rbp-24]           ; symbol
+    call sexp_alloc_cons
+    mov [rbp-24], rax
+
     jmp .succeeded
 
 .succeeded_string:
+    ;; value-tag
+    ;;         |-----4||-2||-2|
+    ;;         |      ||  ||  |
+    ;;                        3 = string
+    mov rdi, 0x0000000000000003
+    call sexp_alloc_int
+    mov rdi, rax                ; value-tag
+    mov rsi, [rbp-24]           ; string
+    call sexp_alloc_cons
+    mov [rbp-24], rax
+
     jmp .succeeded
 
 .succeeded_integer:
+    ;; value-tag
+    ;;         |-----4||-2||-2|
+    ;;         |      ||  ||  |
+    ;;                        4 = int
+    mov rdi, 0x0000000000000004
+    call sexp_alloc_int
+    mov rdi, rax                ; value-tag
+    mov rsi, [rbp-24]           ; int
+    call sexp_alloc_cons
+    mov [rbp-24], rax
+
     jmp .succeeded
 
 .succeeded:
@@ -805,7 +893,7 @@ parse_constant_value:
     call sexp_print
 
     mov rax, [rbp-24]
-    jmp .ok
+    jmp .break
 
 .failed:
     ;; revert
@@ -816,7 +904,7 @@ parse_constant_value:
     mov rdi, [rbp-8]
     call parser_set_failed
 
-.ok:
+.break:
     leave
     ret
 
@@ -1397,6 +1485,7 @@ parse_reg_value:
 
 .rbp:
     ;; value-tag
+    ;;         |-----4||-2||-2|
     ;;         |      ||  ||  |
     ;;                        1 = register
     ;;                    1     = rbp
@@ -1407,6 +1496,7 @@ parse_reg_value:
     mov rsi, [rbp-24]           ; symbol
     call sexp_alloc_cons
     mov [rbp-24], rax
+
     jmp .ok
 
 .failed:
