@@ -206,7 +206,7 @@ parse_code:
 
     lea rdi, [rbp-56]           ; asm
     mov rsi, [rbp-40]           ; statement
-    ; call asm_process_statement
+    call asm_process_statement
 
     mov rdi, [rbp-8]
     call parser_is_finished
@@ -1880,19 +1880,20 @@ asm_process_statement:
     mov [rbp-40], rax
 
 .loop:
-    mov rax, [rbp-40]           ; args
+    mov rax, [rbp-40]           ; args, (hd . rest) | nil
     cmp rax, 0
     je .break
 
-    mov rdi, [rbp-40]
-    call sexp_car
+    mov rdi, [rbp-40]           ; (hd . rest)
+    call sexp_car               ; hd
 
-    mov rdi, rax                ; sexp*
-    mov rsi, 1                  ; size
-    call asm_write_sexp
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, rax                ; (type . value): sexp* as hd
+    mov rdx, 1                  ; size
+    call asm_write_node
 
-    mov rdi, [rbp-40]
-    call sexp_cdr
+    mov rdi, [rbp-40]           ; (hd . rest)
+    call sexp_cdr               ; rest
     mov [rbp-40], rax
 
     jmp .loop
@@ -1904,6 +1905,52 @@ asm_process_statement:
     leave
     ret
 
+
+;;; rdi: asm*
+;;; rsi: sexp*
+;;; rdx: u64 byte-size
+asm_write_node:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 24
+
+    mov [rbp-24], rdx           ; byte-size
+    mov [rbp-16], rsi           ; (type . value): sexp*
+    mov [rbp-8], rdi            ; asm*
+
+    mov rdi, rsi                ; (type . value): sexp*
+    call sexp_car               ; type
+
+    mov rdi, rax
+    call sexp_internal_int_value ; value-tag
+    and rax, 0x00000000000000ff
+
+    cmp rax, 3                  ; string
+    je .write_sexp
+
+    cmp rax, 4                  ; int
+    je .write_sexp
+
+    ;; Failed
+    mov rdi, str_ice_invalid_node
+    call runtime_print_string
+
+    call runtime_print_newline
+
+    mov rdi, 1
+    call runtime_exit
+
+.write_sexp:
+    mov rdi, [rbp-16]           ; (type . value): sexp*
+    call sexp_cdr               ; value
+
+    mov rdi, rax
+    mov rsi, [rbp-24]           ; byte-size
+    call asm_write_sexp
+
+.break:
+    leave
+    ret
 
 ;;; rdi: sexp*
 ;;; rsi: u64 byte-size
@@ -2417,6 +2464,7 @@ str_size_qword: db "qword", 0
 str_ice_invalid_statement:  db "ICE: Invalid statement", 0
 str_ice_invalid_inst:       db "ICE: Invalid inst", 0
 str_ice_invalid_type:       db "ICE: Invalid type", 0
+str_ice_invalid_node:       db "ICE: Invalid node", 0
 str_ice_unsupported_size:   db "ICE: Unsupported size", 0
 
 str_inst_db:    db "db", 0
