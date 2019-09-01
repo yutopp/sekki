@@ -1474,13 +1474,6 @@ parse_reg_value:
     call sexp_value_string_as_hash
     mov [rbp-32], rax           ; hash
 
-    ;; rbp
-    mov rdi, str_reg_rbp
-    call runtime_string_hash
-    mov rdi, [rbp-32]           ; hash
-    cmp rdi, rax
-    je .succeeded_rbp
-
     ;; rax
     mov rdi, str_reg_rax
     call runtime_string_hash
@@ -2027,7 +2020,7 @@ asm_process_statement:
 
 
 .inst_mov:
-    mov rdi, [rbp-8]            ; asm
+    mov rdi, [rbp-8]            ; asm*
     mov rsi, [rbp-32]           ; args
     call asm_write_inst_mov
     jmp .break
@@ -2077,12 +2070,26 @@ asm_write_inst_mov:
     and rax, 0x000000000000ffff ; type-tag
 
     cmp rax, 1                  ; register
-    jmp .arg_1_reg
+    je .arg_1_reg
+
+    cmp rax, 5                  ; addressing
+    je .arg_1_mod_rm
 
     mov rdi, 10                 ; debug
     call runtime_exit
 
 .arg_1_reg:
+    ;; args[2] inspect
+    mov rax, [rbp-48]
+    and rax, 0x000000000000ffff ; type-tag
+
+    cmp rax, 1                  ; register
+    jmp .encode_mr
+
+    mov rdi, 11                 ; debug
+    call runtime_exit
+
+.arg_1_mod_rm:
     ;; args[2] inspect
     mov rax, [rbp-48]
     and rax, 0x000000000000ffff ; type-tag
@@ -2101,38 +2108,221 @@ asm_write_inst_mov:
     mov rdi, 0x89               ; MOV r/m, r
     call asm_write_u8
 
-    mov rax, [rbp-32]           ; args[1]
-    mov rax, 16                 ; 2 * 8 bits
-    and rax, 0x000000000000ffff ; register-index
-    mov rdi, rax                ; ModR/M, effective-reg
+    mov rdi, [rbp-8]            ; asm*
+    lea rsi, [rbp-32]           ; args[1], effective-reg
 
     mov rax, [rbp-48]           ; args[2]
     shr rax, 16                 ; 2 * 8 bits
     and rax, 0x000000000000ffff ; register-index
-    mov rsi, rax                ; ModR/M, /r-digit
+    mov rdx, rax                ; ModR/M, /r-digit
 
-    call asm_write_mod_rm_reg
+    call asm_write_operends
 
     leave
     ret
 
 
+;;; rdi: asm*
+;;; rsi: arg*, effective-reg
+;;; rdx: u64, /r
+asm_write_operends:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 72
 
-;;; rdi: effective-reg
-;;; rsi: /r
-asm_write_mod_rm_reg:
-    and rdi, 0x07               ; 0b00000111, RM
-    or rax, rdi
+    mov byte [rbp-72], 0        ; mod
+    mov byte [rbp-71], 0        ; disp-signed
+    mov byte [rbp-70], 0        ; r/m
+    mov byte [rbp-69], 0        ; disp-size
 
-    and rsi, 0x07               ; 0b00000111, REG
-    shl rsi, 3                  ; 3bits
-    mov rax, rsi                ; 0b00111000, REG
+    mov qword [rbp-56], 0       ; sexp*, disp
+    mov qword [rbp-48], 0       ; sexp*, index-reg
+    mov qword [rbp-40], 0       ; inner-arg. type
+    mov qword [rbp-32], 0       ; inner-arg, value
+    mov [rbp-24], rdx           ; u64, /r-digit
+    mov [rbp-16], rsi           ; arg*, effective-reg
+    mov [rbp-8], rdi            ; asm*
 
-    or rax, 0xc0                ; 0b11000000, Mod
+    mov rax, [rbp-16]           ; arg*
+    mov rax, [rax]              ; arg.type
+    and rax, 0x000000000000ffff ; type-tag
 
-    mov rdi, rax
+    cmp rax, 1                  ; register
+    je .mod3
+
+    cmp rax, 5                  ; addressing
+    je .mod0to2
+
+    ;; ICE
+    mov rdi, 12                 ; debug
+    call runtime_exit
+
+.mod0to2:
+    mov rax, [rbp-16]           ; arg*
+    mov rdi, [rax+8]            ; sexp*, value
+    lea rsi, [rbp-40]           ; arg*, inner-arg
+    call asm_decode_arg
+
+    mov rax, [rbp-40]           ; inner-arg, type
+    and rax, 0x000000000000ffff ; type-tag
+
+    cmp rax, 1                  ; register
+    je .mod0_no_disp
+
+    cmp rax, 6                  ; expr
+    je .mod1to2
+
+    ;; ICE
+    mov rdi, 13                 ; debug
+    call runtime_exit
+
+.mod0_no_disp:
+    ;; ICE
+    mov rdi, 14                 ; debug
+    call runtime_exit
+
+.mod1to2:
+    mov rax, [rbp-40]           ; inner-arg, type
+    shr rax, 16                 ; 2 * 8  bits
+    and rax, 0x000000000000ffff
+    mov byte [rbp-71], al       ; disp-signed
+
+    mov rdi, [rbp-32]           ; inner-value, value(expr)
+    call sexp_car               ; lhs (type . value)
+    mov [rbp-48], rax           ; index-reg
+    ;; TODO: check type is register
+
+    mov rdi, [rbp-32]           ; inner-value, value(expr)
+    call sexp_cdr               ; rhs (type . value)
+    mov [rbp-56], rax           ; disp
+
+    mov rdi, [rbp-56]           ; disp
+    lea rsi, [rbp-40]           ; inner-arg, type
+    call asm_decode_arg
+
+    mov rax, [rbp-40]           ; inner-arg, type
+    and rax, 0x000000000000ffff ; type-tag
+
+    cmp rax, 2                  ; label
+    je .mod2                    ; assume 32bits
+
+    cmp rax, 4                  ; integer
+    jne .unsupported_operand
+
+    mov rdi, [rbp-32]           ; inner-arg, value
+    call sexp_internal_int_value ; value-tag
+
+    cmp rax, 128
+    jge .mod2
+
+.mod1:
+    mov byte [rbp-72], 1        ; mod
+
+    mov rdi, [rbp-48]           ; index-reg
+    lea rsi, [rbp-40]           ; inner-arg, type
+    call asm_decode_arg
+
+    mov rax, [rbp-40]           ; inner-arg, type
+    shr rax, 16                 ; 2 * 8 bits
+    and rax, 0x000000000000ffff ; register-index
+
+    mov byte [rbp-70], al        ; r/m
+
+    mov byte [rbp-69], 1         ; disp-size
+
+    jmp .mod
+
+.mod2:
+    ;; ICE
+    mov rdi, 16                 ; debug
+    call runtime_exit
+
+.mod3:
+    mov byte [rbp-72], 3        ; mod
+
+    mov rax, [rbp-16]           ; arg*
+    mov rax, [rax]              ; arg.type
+    shr rax, 16                 ; 2 * 8 bits
+    and rax, 0x000000000000ffff ; register-index
+
+    mov byte [rbp-70], al       ; r/m
+
+.mod:
+    ;; Mod R/M
+    xor rcx, rcx
+
+    xor rax, rax
+    mov al, [rbp-72]            ; Mod
+    shl al, 6                   ; 0b11000000, Mod
+    or cl, al
+
+    mov al, [rbp-24]            ; Reg
+    shl al, 3                   ; 0b00111000, Reg
+    or cl, al
+
+    mov al, [rbp-70]            ; R/M
+    or cl, al                   ; 0b00000111, R/M
+
+    mov rdi, rcx
     call asm_write_u8
 
+    ;; Disp
+    mov rax, [rbp-56]           ; disp
+    cmp rax, 0
+    jne .disp
+
+.mod_after_disp:
+    jmp .break
+
+.disp:
+    mov rdi, [rbp-56]           ; disp
+    lea rsi, [rbp-40]           ; inner-arg, type
+    call asm_decode_arg
+
+    mov rax, [rbp-40]           ; inner-arg, type
+    and rax, 0x000000000000ffff ; type-tag
+
+    cmp rax, 2                  ; label
+    je .unsupported_operand     ; assume 32bits, TODO: fix
+
+    cmp rax, 4                  ; integer
+    jne .unsupported_operand
+
+    mov rdi, [rbp-32]           ; inner-arg, value
+    call sexp_internal_int_value ; value-tag
+    mov rcx, rax
+
+    mov al, byte [rbp-69]       ; disp-size
+    cmp al, 1
+    je .disp_1
+
+    ;; ICE
+    mov rdi, 17                 ; debug
+    call runtime_exit
+
+.disp_1:
+    mov al, [rbp-71]            ; disp-signed
+    cmp al, 0
+    je .disp_1_not_signed
+
+    neg cl
+
+.disp_1_not_signed:
+    mov rdi, rcx
+    call asm_write_u8
+
+    jmp .mod_after_disp
+
+.unsupported_operand:
+    mov rdi, rax
+    call runtime_print_uint64
+
+    ;; ICE
+    mov rdi, 16                 ; debug
+    call runtime_exit
+
+.break:
+    leave
     ret
 
 
