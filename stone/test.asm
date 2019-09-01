@@ -1,8 +1,9 @@
     bits 64
     db 1
+
+hoge:  equ 1+a
+    db hoge
 a:
-segment_align:  equ 1+a
-    db segment_align
 
 ;    db 0, "abc", 12
 ;    mov [rbp-8], rbp
