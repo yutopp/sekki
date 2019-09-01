@@ -2046,6 +2046,20 @@ asm_process_statement:
     cmp rdi, rax
     je .inst_db
 
+    ;; dw
+    mov rdi, str_inst_dw
+    call runtime_string_hash
+    mov rdi, [rbp-24]
+    cmp rdi, rax
+    je .inst_dw
+
+    ;; dd
+    mov rdi, str_inst_dd
+    call runtime_string_hash
+    mov rdi, [rbp-24]
+    cmp rdi, rax
+    je .inst_dd
+
     ;; dq
     mov rdi, str_inst_dq
     call runtime_string_hash
@@ -2088,32 +2102,31 @@ asm_process_statement:
 
 
 .inst_db:
-    mov rax, [rbp-32]           ; args
-    mov [rbp-40], rax
-
-.inst_db_loop:
-    mov rax, [rbp-40]           ; args, (hd . rest) | nil
-    cmp rax, 0
-    je .break
-
-    mov rdi, [rbp-40]           ; (hd . rest)
-    call sexp_car               ; hd
-
     mov rdi, [rbp-8]            ; asm*
-    mov rsi, rax                ; (type . value): sexp* as hd
-    mov rdx, 1                  ; size
-    mov rcx, 0                  ; NOT disallow
-    call asm_write_node
+    mov rsi, [rbp-32]           ; args
+    mov rdx, 1                  ; byte-size
+    call asm_write_inst_dump
+    jmp .break
 
-    mov rdi, [rbp-40]           ; (hd . rest)
-    call sexp_cdr               ; rest
-    mov [rbp-40], rax
+.inst_dw:
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-32]           ; args
+    mov rdx, 2                  ; byte-size
+    call asm_write_inst_dump
+    jmp .break
 
-    jmp .inst_db_loop
-
+.inst_dd:
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-32]           ; args
+    mov rdx, 4                  ; byte-size
+    call asm_write_inst_dump
+    jmp .break
 
 .inst_dq:
-    ;; TODO
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-32]           ; args
+    mov rdx, 8                  ; byte-size
+    call asm_write_inst_dump
     jmp .break
 
 
@@ -2259,6 +2272,42 @@ asm_write_inst_org:
     mov rdi, [rbp-8]            ; asm*
     mov [rdi+32], rax           ; asm.segment-base
 
+    leave
+    ret
+
+;;; rdi: asm*
+;;; rsi: args
+;;; rdx: u32, size
+asm_write_inst_dump:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32
+
+    mov [rbp-24], rdx           ; byte-size
+    mov [rbp-16], rsi           ; args: sexp*
+    mov [rbp-8], rdi            ; asm*
+
+.loop:
+    mov rdi, [rbp-16]           ; args, (hd . rest) | nil
+    cmp rdi, 0
+    je .break
+
+    call sexp_car               ; hd
+
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, rax                ; (type . value): sexp* as hd
+    mov rdx, [rbp-24]           ; size
+    mov rcx, 0                  ; NOT disallow
+    call asm_write_node
+
+    ;; step
+    mov rdi, [rbp-16]           ; (hd . rest)
+    call sexp_cdr               ; rest
+    mov [rbp-16], rax
+
+    jmp .loop
+
+.break:
     leave
     ret
 
@@ -2568,9 +2617,13 @@ asm_eval_expr:
     cmp rax, 4                  ; integer
     je .arg_integer
 
+    cmp rax, 3                  ; string
+    je .arg_string
+
     cmp rax, 2                  ; label
     je .arg_label
 
+    ;; failed
     mov rdi, 11                 ; debug
     call runtime_exit
 
@@ -2670,6 +2723,7 @@ asm_eval_expr:
     jmp .break
 
 .arg_integer:
+.arg_string:
     mov rax, [rbp-16]           ; pass-through
     jmp .break
 
@@ -2884,6 +2938,15 @@ asm_write_value:
     cmp rsi, 1
     je .u8
 
+    cmp rsi, 2
+    je .u16
+
+    cmp rsi, 4
+    je .u32
+
+    cmp rsi, 8
+    je .u64
+
     ;; Failed
     mov rdi, str_ice_unsupported_size
     call runtime_print_string
@@ -2895,8 +2958,21 @@ asm_write_value:
 
 .u8:
     call asm_write_u8
-    ret
+    jmp .break
 
+.u16:
+    call asm_write_u16
+    jmp .break
+
+.u32:
+    call asm_write_u32
+    jmp .break
+
+.u64:
+    call asm_write_u64
+
+.break:
+    ret
 
 ;;; rdi: u8
 asm_write_u8:
@@ -2908,6 +2984,69 @@ asm_write_u8:
     mov byte [rax], dl
 
     add rcx, 1
+    mov [g_asm_buffer_cursor], rcx
+
+    mov rax, [g_asm_buffer_size]
+    cmp rcx, rax
+    jl .break                   ; if rcx < rax
+
+    mov [g_asm_buffer_size], rcx
+
+.break:
+    ret
+
+;;; rdi: u16
+asm_write_u16:
+    mov rax, g_asm_buffer
+    mov rcx, [g_asm_buffer_cursor]
+
+    add rax, rcx
+    mov rdx, rdi
+    mov word [rax], dx
+
+    add rcx, 2
+    mov [g_asm_buffer_cursor], rcx
+
+    mov rax, [g_asm_buffer_size]
+    cmp rcx, rax
+    jl .break                   ; if rcx < rax
+
+    mov [g_asm_buffer_size], rcx
+
+.break:
+    ret
+
+;;; rdi: u32
+asm_write_u32:
+    mov rax, g_asm_buffer
+    mov rcx, [g_asm_buffer_cursor]
+
+    add rax, rcx
+    mov rdx, rdi
+    mov dword [rax], edx
+
+    add rcx, 4
+    mov [g_asm_buffer_cursor], rcx
+
+    mov rax, [g_asm_buffer_size]
+    cmp rcx, rax
+    jl .break                   ; if rcx < rax
+
+    mov [g_asm_buffer_size], rcx
+
+.break:
+    ret
+
+;;; rdi: u64
+asm_write_u64:
+    mov rax, g_asm_buffer
+    mov rcx, [g_asm_buffer_cursor]
+
+    add rax, rcx
+    mov rdx, rdi
+    mov qword [rax], rdx
+
+    add rcx, 8
     mov [g_asm_buffer_cursor], rcx
 
     mov rax, [g_asm_buffer_size]
@@ -3656,6 +3795,8 @@ str_inst_bits:  db "bits", 0
 str_inst_org:   db "org", 0
 str_inst_equ:   db "equ", 0
 str_inst_db:    db "db", 0
+str_inst_dw:    db "dw", 0
+str_inst_dd:    db "dd", 0
 str_inst_dq:    db "dq", 0
 str_inst_mov:   db "mov", 0
 

@@ -3,6 +3,9 @@
 
 hoge:  equ 1+a
     db hoge
+    dw hoge
+    dd hoge
+    dq hoge
 a:
 
 ;    db 0, "abc", 12
