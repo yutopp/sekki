@@ -6,6 +6,7 @@ hoge:  equ 1+a
     dw hoge
     dd hoge
     dq hoge
+    dq a - $$
 a:
 
 ;    db 0, "abc", 12

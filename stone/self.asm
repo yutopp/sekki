@@ -193,6 +193,18 @@ parse_code:
     lea rax, [rbp-32]
     mov [rbp-8], rax
 
+    ;; initialize
+
+    ;; $
+    mov rdi, str_g_symbol_doller
+    call sexp_alloc_string
+    mov [g_sexp_symbol_doller], rax
+
+    ;; $$
+    mov rdi, str_g_symbol_doller_doller
+    call sexp_alloc_string
+    mov [g_sexp_symbol_doller_doller], rax
+
 .loop:
     mov rdi, [rbp-8]
     call parse_statement
@@ -1156,7 +1168,7 @@ parse_symbol:
     mov rdi, rax
     add rdi, r10
     mov rsi, rcx
-    call sexp_alloc_string
+    call sexp_alloc_string_view
 
     jmp .finalize
 
@@ -1235,7 +1247,7 @@ parse_string:
     mov rdi, rax
     add rdi, r10
     mov rsi, rcx
-    call sexp_alloc_string
+    call sexp_alloc_string_view
     mov qword [rbp-24], rax
 
     mov rax, qword [rbp-24]
@@ -2662,6 +2674,9 @@ asm_eval_expr:
     cmp rax, rcx
     jne .arg_expr_cannot_resolve
 
+    cmp rax, 2                  ; label
+    je .arg_expr_cannot_resolve
+
     cmp rax, 4                  ; int
     jne .invalid_op
 
@@ -2728,6 +2743,21 @@ asm_eval_expr:
     jmp .break
 
 .arg_label:
+    ;;
+    mov rdi, [g_sexp_symbol_doller]
+    mov rsi, [rbp-24]           ; arg.value, symbol
+    call sexp_equals
+    cmp rax, 0
+    jne .arg_label_doller
+
+    ;;
+    mov rdi, [g_sexp_symbol_doller_doller]
+    mov rsi, [rbp-24]           ; arg.value, symbol
+    call sexp_equals
+    cmp rax, 0
+    jne .arg_label_doller_doller
+
+    ;; other
     mov rdi, [rbp-8]            ; asm*
     mov rsi, [rbp-24]           ; arg.value, symbol
     call asm_find_labels
@@ -2736,6 +2766,32 @@ asm_eval_expr:
     jne .break
 
     mov rax, [rbp-16]           ; pass-through
+    jmp .break
+
+.arg_label_doller:
+    ;; current location
+    mov rdi, [rbp-8]            ; asm*
+    call asm_current_loc
+
+    mov rdi, rax
+    call sexp_alloc_int
+
+    mov rdi, rax
+    call tnode_alloc_int_node
+
+    jmp .break
+
+.arg_label_doller_doller:
+    ;; current segment-base
+    mov rdi, [rbp-8]            ; asm*
+    call asm_segment_base
+
+    mov rdi, rax
+    call sexp_alloc_int
+
+    mov rdi, rax
+    call tnode_alloc_int_node
+
     jmp .break
 
 .invalid_op:
@@ -2748,6 +2804,21 @@ asm_eval_expr:
 
 .break:
     leave
+    ret
+
+
+;;; rdi: asm*
+asm_segment_base:
+    mov rax, [rdi+32]           ; asm.segment_base
+    ret
+
+
+;;; rdi: asm*
+asm_current_loc:
+    mov rcx, [g_asm_buffer_cursor]
+    call asm_segment_base
+    add rcx, rax
+    mov rax, rcx
     ret
 
 
@@ -3297,9 +3368,28 @@ sexp_alloc_int:
 
     ret
 
+
+;;; rdi: *char
+sexp_alloc_string:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 8
+
+    mov [rbp-8], rdi
+
+    call runtime_strlen
+
+    mov rdi, [rbp-8]
+    mov rsi, rax
+    call sexp_alloc_string_view
+
+    leave
+    ret
+
+
 ;;; rdi: *char
 ;;; rsi: u64
-sexp_alloc_string:
+sexp_alloc_string_view:
     call sexp_alloc
     mov rcx, rax
 
@@ -3308,6 +3398,7 @@ sexp_alloc_string:
     mov [rcx+16], rsi
 
     ret
+
 
 ;;; rdi: *value car
 ;;; rsi: *value cdr
@@ -3745,6 +3836,9 @@ section_bss_begin:
 
 ret_code:   dq 42
 
+g_sexp_symbol_doller:   dq 0
+g_sexp_symbol_doller_doller:   dq 0
+
 g_code_buffer:  times app_max_code_buffer_size db 0
 g_code_size:    dq 0
 
@@ -3772,6 +3866,9 @@ str_paren_l:    db "(", 0
 str_paren_r:    db ")", 0
 str_colon:      db ":", 0
 str_comma:      db ",", 0
+
+str_g_symbol_doller:    db "$", 0
+str_g_symbol_doller_doller: db "$$", 0
 
 str_reg_rax:    db "rax", 0
 str_reg_rcx:    db "rcx", 0
