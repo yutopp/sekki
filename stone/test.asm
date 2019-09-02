@@ -1,6 +1,8 @@
     bits 64
     db 1
 
+    org     0x01
+
 hoge:  equ 1+a
     db hoge
     dw hoge

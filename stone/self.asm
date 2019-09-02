@@ -2004,7 +2004,10 @@ asm_process_statement:
     call runtime_exit
 
 .label:
-    mov rdi, [g_asm_buffer_size] ; loc
+    mov rdi, [rbp-8]             ; asm*
+    call asm_current_loc
+
+    mov rdi, rax                 ; loc
     call sexp_alloc_int
     mov rdi, rax
     call tnode_alloc_int_node
@@ -2775,7 +2778,6 @@ asm_eval_expr:
 
     mov rdi, rax
     call sexp_alloc_int
-
     mov rdi, rax
     call tnode_alloc_int_node
 
@@ -2788,7 +2790,6 @@ asm_eval_expr:
 
     mov rdi, rax
     call sexp_alloc_int
-
     mov rdi, rax
     call tnode_alloc_int_node
 
