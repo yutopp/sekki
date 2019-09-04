@@ -2975,10 +2975,10 @@ asm_eval_expr:
 
     mov rdi, [rbp-16]           ; sexp*(tnode)
     call tnode_type
-    shr rcx, 16                 ; 8 * 2 bits
-    and rcx, 0x000000000000ffff ; op
+    shr rax, 16                 ; 8 * 2 bits
+    and rax, 0x000000000000ffff ; op
 
-    cmp rcx, 0                  ; add
+    cmp rax, 0                  ; add
     je .eval_add
 
     ;; to substruct values in add inst, nagate operand
