@@ -121,8 +121,8 @@ code_segment_begin:
     ;; --> text
 section_text_begin:
 _start:
-;    mov rax, 10
-;    mov rax, section_text_end
+    mov rax, 10
+    mov rax, section_text_end
     ;;     call _start
 
 section_text_end:
