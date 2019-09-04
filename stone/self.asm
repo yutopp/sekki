@@ -5,7 +5,7 @@ segment_align:  equ 0x1000
 
 app_max_code_buffer_size:   equ 0x10000
 app_max_asm_buffer_size:    equ 0x8000
-app_max_sexp_objects_count: equ 2000
+app_max_sexp_objects_count: equ 18000
 
 ;;; ELF Header
     ;; e_ident
@@ -2187,12 +2187,47 @@ asm_process_statement:
     cmp rdi, rax
     je .inst_mov
 
+    ;; push
+    mov rdi, str_inst_push
+    call runtime_string_hash
+    mov rdi, [rbp-24]
+    cmp rdi, rax
+    je .inst_push
+
+    ;; pop
+    mov rdi, str_inst_pop
+    call runtime_string_hash
+    mov rdi, [rbp-24]
+    cmp rdi, rax
+    je .inst_pop
+
     ;; call
     mov rdi, str_inst_call
     call runtime_string_hash
     mov rdi, [rbp-24]
     cmp rdi, rax
     je .inst_call
+
+    ;; syscall
+    mov rdi, str_inst_syscall
+    call runtime_string_hash
+    mov rdi, [rbp-24]
+    cmp rdi, rax
+    je .inst_syscall
+
+    ;; leave
+    mov rdi, str_inst_leave
+    call runtime_string_hash
+    mov rdi, [rbp-24]
+    cmp rdi, rax
+    je .inst_leave
+
+    ;; ret
+    mov rdi, str_inst_ret
+    call runtime_string_hash
+    mov rdi, [rbp-24]
+    cmp rdi, rax
+    je .inst_ret
 
     mov rdi, str_ice_invalid_inst
     call runtime_print_string
@@ -2263,11 +2298,48 @@ asm_process_statement:
     call asm_write_inst_mov
     jmp .break
 
+
+.inst_push:
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-32]           ; args
+    call asm_write_inst_push
+    jmp .break
+
+
+.inst_pop:
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-32]           ; args
+    call asm_write_inst_pop
+    jmp .break
+
+
 .inst_call:
     mov rdi, [rbp-8]            ; asm*
     mov rsi, [rbp-32]           ; args
     call asm_write_inst_call
     jmp .break
+
+
+.inst_syscall:
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-32]           ; args
+    call asm_write_inst_syscall
+    jmp .break
+
+
+.inst_leave:
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-32]           ; args
+    call asm_write_inst_leave
+    jmp .break
+
+
+.inst_ret:
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-32]           ; args
+    call asm_write_inst_ret
+    jmp .break
+
 
 .break:
     leave
@@ -2573,7 +2645,190 @@ asm_write_inst_mov:
 
 ;;; rdi: asm*
 ;;; rsi: args
+asm_write_inst_push:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 48
+
+    mov qword [rbp-48], 0       ; size
+
+    mov qword [rbp-24], 0       ; args[1], sexp*(tnode)
+
+    mov [rbp-16], rsi           ; args: sexp*
+    mov [rbp-8], rdi            ; asm*
+
+    ;; TODO: check-length
+
+    ;; args[1]
+    mov rdi, [rbp-8]            ; asm*
+    lea rsi, [rbp-16]           ; (hd . rest)*
+    call asm_step_args_with_eval ; hd
+    mov [rbp-24], rax           ; args[1]
+
+    ;; args[1] inspect
+    mov rdi, [rbp-24]
+    call tnode_type_tag
+
+    cmp rax, 5                  ; addressing
+    je .encode_m
+
+    cmp rax, 1                  ; register
+    je .encode_o
+
+    mov rdi, 10                 ; debug
+    call runtime_exit
+
+    ;; PUSH r/m
+.encode_m:
+    mov rdi, 0xff               ; PUSH r/m
+    call asm_write_u8
+
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-24]           ; args[1], effective-reg
+    mov rdx, 6                  ; ModR/M, /r-digit
+    call asm_write_operands
+
+    jmp .break
+
+;; PUSH r
+.encode_o:
+    mov rdi, [rbp-24]           ; arg[1]
+    call tnode_type
+    shr rax, 16                 ; 2 * 8 bits
+    and rax, 0x000000000000ffff ; register-index
+
+    mov rdi, 0x50               ; PUSH r
+    add rdi, rax                ;        + rd
+    call asm_write_u8
+
+    jmp .break
+
+;; PUSH imm
+.encode_i:
+    jmp .break
+
+.break:
+    leave
+    ret
+
+
+;;; rdi: asm*
+;;; rsi: args
+asm_write_inst_pop:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 48
+
+    mov qword [rbp-48], 0       ; size
+
+    mov qword [rbp-24], 0       ; args[1], sexp*(tnode)
+
+    mov [rbp-16], rsi           ; args: sexp*
+    mov [rbp-8], rdi            ; asm*
+
+    ;; TODO: check-length
+
+    ;; args[1]
+    mov rdi, [rbp-8]            ; asm*
+    lea rsi, [rbp-16]           ; (hd . rest)*
+    call asm_step_args_with_eval ; hd
+    mov [rbp-24], rax           ; args[1]
+
+    ;; args[1] inspect
+    mov rdi, [rbp-24]
+    call tnode_type_tag
+
+    cmp rax, 5                  ; addressing
+    je .encode_m
+
+    cmp rax, 1                  ; register
+    je .encode_o
+
+    mov rdi, 10                 ; debug
+    call runtime_exit
+
+    ;; POP r/m
+.encode_m:
+    mov rdi, 0x8f               ; POP r/m
+    call asm_write_u8
+
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-24]           ; args[1], effective-reg
+    mov rdx, 0                  ; ModR/M, /r-digit
+    call asm_write_operands
+
+    jmp .break
+
+;; POP r
+.encode_o:
+    mov rdi, [rbp-24]           ; arg[1]
+    call tnode_type
+    shr rax, 16                 ; 2 * 8 bits
+    and rax, 0x000000000000ffff ; register-index
+
+    mov rdi, 0x58               ; POP r
+    add rdi, rax                ;       + rd
+    call asm_write_u8
+
+    jmp .break
+
+;; PUSH imm
+.encode_i:
+    jmp .break
+
+.break:
+    leave
+    ret
+
+
+;;; rdi: asm*
+;;; rsi: args
 asm_write_inst_call:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 48
+
+    leave
+    ret
+
+
+;;; rdi: asm*
+;;; rsi: args
+asm_write_inst_syscall:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 48
+
+    mov [rbp-16], rsi           ; args: sexp*
+    mov [rbp-8], rdi            ; asm*
+
+    ;; TODO: check-length
+
+    ;; syscall
+    mov rdi, 0x0f
+    call asm_write_u8
+
+    mov rdi, 0x05
+    call asm_write_u8
+
+    leave
+    ret
+
+
+;;; rdi: asm*
+;;; rsi: args
+asm_write_inst_leave:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 48
+
+    leave
+    ret
+
+
+;;; rdi: asm*
+;;; rsi: args
+asm_write_inst_ret:
     push rbp
     mov rbp, rsp
     sub rsp, 48
@@ -3825,10 +4080,16 @@ sexp_alloc:
     ret
 
 sexp_cannot_alloc:
-    ;; TODO
-    mov rax, 60
-    mov rdi, 2
-    syscall
+    mov rdi, str_ice_nomore_sexps
+    call runtime_print_string
+    call runtime_print_newline
+
+    mov rdi, [g_sexp_objects_count]
+    call runtime_print_uint64
+    call runtime_print_newline
+
+    mov rdi, 3
+    call runtime_exit
 
 ;;; rdi: int
 sexp_alloc_int:
@@ -4359,6 +4620,7 @@ str_ice_invalid_type:       db "ICE: Invalid type", 0
 str_ice_invalid_node:       db "ICE: Invalid node", 0
 str_ice_invalid_expr:       db "ICE: Invalid op", 0
 str_ice_unsupported_size:   db "ICE: Unsupported size", 0
+str_ice_nomore_sexps:   db "ICE: Cannot allocate sexp nodes", 0
 
 str_inst_bits:  db "bits", 0
 str_inst_org:   db "org", 0
@@ -4371,7 +4633,12 @@ str_inst_dd:    db "dd", 0
 str_inst_dq:    db "dq", 0
 
 str_inst_mov:   db "mov", 0
+str_inst_push:  db "push", 0
+str_inst_pop:   db "pop", 0
 str_inst_call:  db "call", 0
+str_inst_syscall:   db "syscall", 0
+str_inst_leave: db "leave", 0
+str_inst_ret:   db "ret", 0
 
 str_debug_arrow_r:  db "->", 0
 str_debug_finished: db "[DEBUG] finished", 0
@@ -4380,7 +4647,7 @@ str_debug_failed_to_parse_addr: db "[DEBUG] Failed to parse addr", 0
 section_rodata_end:
     ;; --< rodata
 
-data_segment_rest_size: equ ($-data_segment_begin)
+data_segment_rest_size: equ $-data_segment_begin
     align segment_align
 data_segment_end:
 
