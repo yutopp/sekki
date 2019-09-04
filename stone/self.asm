@@ -2054,6 +2054,13 @@ asm_process_statement:
     cmp rdi, rax
     je .inst_equ
 
+    ;; align
+    mov rdi, str_inst_align
+    call runtime_string_hash
+    mov rdi, [rbp-24]
+    cmp rdi, rax
+    je .inst_align
+
     ;; db
     mov rdi, str_inst_db
     call runtime_string_hash
@@ -2113,6 +2120,13 @@ asm_process_statement:
     mov rdi, [rbp-8]            ; asm*
     mov rsi, [rbp-32]           ; args
     call asm_write_inst_equ
+    jmp .break
+
+
+.inst_align:
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-32]           ; args
+    call asm_write_inst_align
     jmp .break
 
 
@@ -2290,6 +2304,7 @@ asm_write_inst_org:
     leave
     ret
 
+
 ;;; rdi: asm*
 ;;; rsi: args
 ;;; rdx: u32, size
@@ -2358,6 +2373,95 @@ asm_write_inst_equ:
     mov rdx, rax                ; (type . loc)
     call asm_add_labels
 
+    leave
+    ret
+
+
+;;; rdi: asm*
+;;; rsi: args
+asm_write_inst_align:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 64
+
+    mov qword [rbp-56], 0       ; offset
+    mov qword [rbp-48], 0       ; align
+    mov qword [rbp-40], 0       ; pad
+
+    mov qword [rbp-32], 0       ; 1st-arg: type : u64
+    mov qword [rbp-24], 0       ;        : value: sexp*
+
+    mov [rbp-16], rsi           ; args: sexp*
+    mov [rbp-8], rdi            ; asm*
+
+    ;; TODO: check-length
+
+    ;; 1st
+    mov rdi, [rbp-16]           ; (hd . rest)
+    call sexp_car               ; hd: (type . value)
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, rax
+    call asm_eval_expr
+    mov rdi, rax
+    lea rsi, [rbp-32]           ; 1st-arg
+    call asm_decode_arg
+
+    ;; args[1] inspect
+    mov rax, [rbp-32]
+    and rax, 0x000000000000ffff ; type-tag
+
+    cmp rax, 4                  ; integer
+    je .arg_1_integer
+
+    mov rdi, 10                 ; debug
+    call runtime_exit
+
+.arg_1_integer:
+    mov rdi, [rbp-24]           ; args[1].value
+    call sexp_internal_int_value
+    mov [rbp-48], rax           ; align
+    cmp rax, 0
+    je .div0
+
+    mov rdi, [rbp-8]            ; asm*
+    mov rax, [g_asm_buffer_cursor]
+    mov [rbp-56], rax           ; offset
+
+    ;; -----    : offset 5
+    ;; -------- : align 8
+    ;;      --- : pad 3
+
+    mov rax, [rbp-56]           ; offset
+    mov rcx, [rbp-48]           ; align
+    mov rdx, 0
+    div rcx                     ; rax <- offset / align, rdx <- offset % align
+
+    mov rax, [rbp-48]           ; pad = (align
+    sub rax, rdx                ;              - (offset % align))
+    mov rdx, 0
+    div rcx                     ;
+    mov [rbp-40], rdx           ;                                  % align
+
+    ;; TODO: implment times and use it
+.loop:
+    mov rcx, [rbp-40]
+    cmp rcx, 0
+    je .break
+
+    mov rdi, 0x90               ; fill by 0x90
+    call asm_write_u8
+
+    mov rcx, [rbp-40]
+    dec rcx
+    mov [rbp-40], rcx
+
+    jmp .loop
+
+.div0:
+    mov rdi, 20                 ; debug
+    call runtime_exit
+
+.break:
     leave
     ret
 
@@ -2596,7 +2700,8 @@ asm_decode_arg:
 
 
 ;;; rdi: asm*
-;;; rsi: sexp*
+;;; rsi: sexp*, tnode
+;;; -> sexp*, tnode
 asm_eval_expr:
     push rbp
     mov rbp, rsp
@@ -3892,6 +3997,8 @@ str_ice_unsupported_size:   db "ICE: Unsupported size", 0
 str_inst_bits:  db "bits", 0
 str_inst_org:   db "org", 0
 str_inst_equ:   db "equ", 0
+str_inst_align: db "align", 0
+str_inst_resb:  db "resb", 0
 str_inst_db:    db "db", 0
 str_inst_dw:    db "dw", 0
 str_inst_dd:    db "dd", 0
