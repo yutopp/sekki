@@ -125,10 +125,54 @@ _start:
     mov rax, section_text_end
     ;;     call _start
 
+
+;;; rdi: char*
+;;; rsi: u64 length
+runtime_string_view_hash:
+    push rbp
+    mov rbp, rsp
+
+    cmp rsi, 8
+    jg .failed
+
+    mov rax, 0
+    mov rcx, 0
+
+;.loop:
+;    cmp rcx, rsi
+;    je .break
+;
+;    mov r10, rdi
+;    add r10, rcx
+;    xor rdx, rdx
+;    mov dl, [r10]
+;
+;    ;; TODO: fix
+;    add rax, rdx
+;
+;    inc rcx
+;    jmp .loop
+;
+.failed:
+;    mov rdi, 2
+;    call runtime_exit
+;    jmp .break
+;
+;.break:
+;    leave
+;    ret
+
+
+;;;
+runtime_exit:
+    mov rax, 60
+    syscall
+
 section_text_end:
-    ;; --< bss
+    ;; --< text
 
 code_segment_rest_size: equ $-code_segment_begin
+    align segment_align
 code_segment_end:
 
     ;; Data
@@ -137,17 +181,74 @@ data_segment_begin:
     ;; --> bss
 section_bss_begin:
 
+;;; WIP
+
 section_bss_end:
     ;; --< bss
 
     ;; --> rodata
 section_rodata_begin:
 
+text_sexp_nil:  db "nil", 0
+text_sexp_unknown:  db "unknown", 0
+text_sexp_int:  db "int", 0
+text_sexp_string:  db "string", 0
+text_error_failed_to_parse: db "Failed to parse", 0
+text_lf:     db 0x0a, 0
+
+str_paren_l:    db "(", 0
+str_paren_r:    db ")", 0
+str_colon:      db ":", 0
+str_comma:      db ",", 0
+
+str_g_symbol_doller:    db "$", 0
+str_g_symbol_doller_doller: db "$$", 0
+
+str_reg_rax:    db "rax", 0
+str_reg_rcx:    db "rcx", 0
+str_reg_rdx:    db "rdx", 0
+str_reg_rbx:    db "rbx", 0
+str_reg_rsp:    db "rsp", 0
+str_reg_rbp:    db "rbp", 0
+str_reg_rsi:    db "rsi", 0
+str_reg_rdi:    db "rdi", 0
+
+str_size_qword: db "qword", 0
+
+str_ice_invalid_statement:  db "ICE: Invalid statement", 0
+str_ice_invalid_inst:       db "ICE: Invalid inst", 0
+str_ice_invalid_type:       db "ICE: Invalid type", 0
+str_ice_invalid_node:       db "ICE: Invalid node", 0
+str_ice_invalid_expr:       db "ICE: Invalid op", 0
+str_ice_unsupported_size:   db "ICE: Unsupported size", 0
+
+str_inst_bits:  db "bits", 0
+str_inst_org:   db "org", 0
+str_inst_equ:   db "equ", 0
+str_inst_align: db "align", 0
+str_inst_resb:  db "resb", 0
+str_inst_db:    db "db", 0
+str_inst_dw:    db "dw", 0
+str_inst_dd:    db "dd", 0
+str_inst_dq:    db "dq", 0
+
+str_inst_mov:   db "mov", 0
+str_inst_call:  db "call", 0
+str_inst_syscall:   db "syscall", 0
+str_inst_leave: db "leave", 0
+str_inst_ret:   db "ret", 0
+
+str_debug_arrow_r:  db "->", 0
+str_debug_finished: db "[DEBUG] finished", 0
+str_debug_failed_to_parse_addr: db "[DEBUG] Failed to parse addr", 0
+
 section_rodata_end:
     ;; --< rodata
 
 data_segment_rest_size: equ $-data_segment_begin
+    align segment_align
 data_segment_end:
+    ;; --< rodata
 
 
 ;;; Section headers
