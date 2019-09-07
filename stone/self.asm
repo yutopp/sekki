@@ -190,10 +190,6 @@ parse_code:
     mov rbp, rsp
     sub rsp, 88
 
-    mov qword [rbp-56], 0       ; sexp*, statements
-    mov qword [rbp-48], 0       ; sexp*, last-statement
-    mov qword [rbp-40], 0       ; sexp*, statement
-
     ;; parser {
     ;;   char* buffer
     ;;   u64   offset
@@ -3125,7 +3121,10 @@ asm_write_inst_jcc:
 
     ;; rel
 .encode_d:
-    mov rdi, [rbp-24]           ; args[1], sexp*(tnode)
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-24]           ; args[1], sexp*(tnode)
+    call asm_calc_rel_sample
+    mov rdi, rax
     call tnode_type_size
     mov [rbp-48], rax           ; size
 
@@ -3209,11 +3208,89 @@ asm_write_inst_jcc:
     mov rdx, [rbp-48]          ; size
     call asm_inst_set_rel_sign_ext
 
-    ;; disp (rel)
-;    mov rdi, [rbp-8]            ; asm*
-;    mov rsi, [rbp-24]           ; args[1]
-;    mov rdx, [rbp-48]           ; size
-;    call asm_write_sign_ext_rel_operand
+    jmp .break
+
+.break:
+    leave
+    ret
+
+
+;;; rdi: asm*
+;;; rsi: args
+asm_write_inst_jmp:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 64
+
+    mov [rbp-56], rdx           ; cond
+    mov qword [rbp-48], 0       ; size
+
+    mov qword [rbp-24], 0       ; args[1], sexp*(tnode)
+
+    mov [rbp-16], rsi           ; args: sexp*
+    mov [rbp-8], rdi            ; asm*
+
+    ;; TODO: check-length
+
+    ;; args[1]
+    mov rdi, [rbp-8]            ; asm*
+    lea rsi, [rbp-16]           ; (hd . rest)*
+    call asm_step_args_with_eval ; hd
+    mov [rbp-24], rax           ; args[1]
+
+    ;; args[1] inspect
+    mov rdi, [rbp-24]
+    call tnode_type_tag
+
+    cmp rax, 4                  ; integer
+    je .encode_d
+
+    cmp rax, 2                  ; label
+    je .encode_d
+
+    mov rdi, 10                 ; debug
+    call runtime_exit
+
+    ;; rel
+.encode_d:
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-24]           ; args[1], sexp*(tnode)
+    call asm_calc_rel_sample
+    mov rdi, rax
+    call tnode_type_size
+    mov [rbp-48], rax           ; size
+
+    cmp qword [rbp-48], 1
+    je .encode_d_rel8
+
+    mov rdi, [rbp-8]           ; asm*
+    mov rsi, 0xe9              ; JMP
+    call asm_inst_append_opcode
+
+    jmp .encode_d_body
+
+.encode_d_rel8:
+    mov rdi, [rbp-8]           ; asm*
+    mov rsi, 0xeb              ; JMP
+    call asm_inst_append_opcode
+
+    jmp .encode_d_body
+
+.encode_d_body:
+    mov rdi, [rbp-8]            ; asm*
+    mov rdi, [rdi]              ; asm.labels
+    call sexp_print
+    call runtime_print_newline
+
+    mov rdi, [rbp-48]
+    call runtime_print_uint64
+    call runtime_print_newline
+
+    ;; imm
+    mov rdi, [rbp-8]           ; asm*
+    mov rsi, [rbp-24]          ; arg[1]
+    mov rdx, [rbp-48]          ; size
+    call asm_inst_set_rel_sign_ext
 
     jmp .break
 
@@ -3632,6 +3709,37 @@ asm_step_args_with_eval:
     mov rdi, [rbp-8]            ; asm*
     mov rsi, rax                ; arg
     call asm_eval_expr
+
+    leave
+    ret
+
+
+;;; rdi: asm*
+;;; rsi: sexp*(tnode)
+asm_calc_rel_sample:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 40
+
+    mov qword [rbp-32], 0       ; offset
+    mov [rbp-24], rdx           ; byte-size
+    mov [rbp-16], rsi           ; (type . value): sexp*
+    mov [rbp-8], rdi            ; asm*
+
+    mov rdi, [rbp-16]           ; (type . value): sexp*(tnode)
+    call tnode_value
+    mov rdi, rax
+    call sexp_internal_int_value
+    mov [rbp-32], rax           ; offset = target
+
+    mov rdi, [rbp-8]            ; asm*
+    call asm_current_loc
+    sub [rbp-32], rax           ; offset -= $
+
+    mov rdi, [rbp-32]
+    call sexp_alloc_int
+    mov rdi, rax
+    call tnode_alloc_uint_node
 
     leave
     ret
@@ -4180,7 +4288,7 @@ asm_inst_set_rel:
     mov qword [rbp-32], 0       ; offset
     mov [rbp-24], rdx           ; byte-size
     mov [rbp-16], rsi           ; (type . value): sexp*
-    mov [rbp-8], rdi            ; inst*
+    mov [rbp-8], rdi            ; asm*
 
     mov rdx, [rbp-24]           ; byte-size
     cmp rdx, 0                  ; byte-size
@@ -6650,7 +6758,7 @@ g_asm_buffer:  times app_max_asm_buffer_size db 0
 g_asm_buffer_size:  dq 0
 g_asm_buffer_cursor:dq 0
 
-g_asm_inst_sizes:   times 600 dd 0
+g_asm_inst_sizes:   times 0x1000 dd 0
 
 g_sexp_objects:  resb 24 * app_max_sexp_objects_count
 g_sexp_objects_count:  dq 0
@@ -6816,6 +6924,7 @@ str_inst_jge:   db "jge", 0
 str_inst_jl:    db "jl", 0
 str_inst_jle:   db "jle", 0
 str_inst_jne:   db "jne", 0
+str_inst_jmp:   db "jmp", 0
 str_inst_call:  db "call", 0
 str_inst_syscall:   db "syscall", 0
 str_inst_leave: db "leave", 0
@@ -6901,6 +7010,10 @@ g_asm_inst_table:
     dq str_inst_jne
     dq asm_write_inst_jcc
     dq 18                       ; jne
+
+    dq str_inst_jmp
+    dq asm_write_inst_jmp
+    dq 0
 
     dq str_inst_call
     dq asm_write_inst_call
