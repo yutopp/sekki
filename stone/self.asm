@@ -2094,8 +2094,8 @@ asm_process_statements:
     ;;   sexp* last-label
     ;;   u64   segment-base
     ;;   u64   inst-index
-    ;;   byte  current-inst-size
     ;;   byte  phase
+    ;;   u32   current-inst-size
     ;;   ..pads..
     ;;   sexp* consts
     ;;   inst  inst
@@ -2105,8 +2105,8 @@ asm_process_statements:
     mov qword [rbp-144], 0       ; sexp*, nil, last-label           16
     mov qword [rbp-136], 0       ; u64, 0    , segment-base         24
     mov qword [rbp-128], 0       ; u64, 0    , inst-index           32
-    mov byte [rbp-120], 0        ; u8, 0     , current-inst-size    40
-    mov byte [rbp-119], 0        ; u8, 0     , phase                41
+    mov byte [rbp-120], 0        ; u8, 0     , phase                40
+    mov byte [rbp-116], 0        ; u8, 0     , current-inst-size    44
     mov qword [rbp-112], 0       ; sexp*, nil, asm.consts           48
     mov qword [rbp-104], 0       ; inst(sizeof(32)), inst           56
     ;;   mov qword [rbp-72], 0
@@ -2156,7 +2156,7 @@ asm_process_statements_phase0:
     mov [rbp-8], rdi            ; asm*
 
     mov rdi, [rbp-8]            ; asm*
-    mov byte [rdi+41], 0        ; asm.phase = 0
+    mov byte [rdi+40], 0        ; asm.phase = 0
 
     mov rdi, [rbp-8]
     mov rsi, [rbp-16]
@@ -2176,7 +2176,7 @@ asm_process_statements_phase1:
     mov [rbp-8], rdi            ; asm*
 
     mov rdi, [rbp-8]            ; asm*
-    mov byte [rdi+41], 1        ; asm.phase = 0
+    mov byte [rdi+40], 1        ; asm.phase = 0
 
     mov rdi, [rbp-8]
     mov rsi, [rbp-16]
@@ -2212,7 +2212,7 @@ asm_process_statements_loop:
     call asm_inst_init
 
     mov rdi, [rbp-8]            ; asm*
-    mov byte [rdi+40], 0        ; clear asm.current-inst-size
+    mov dword [rdi+44], 0       ; clear asm.current-inst-size
 
     mov rdi, [rbp-16]           ; statements
     call sexp_car
@@ -2227,8 +2227,7 @@ asm_process_statements_loop:
 
     ;; write inst-size
     mov rdi, [rbp-8]            ; asm*
-    xor rax, rax
-    mov al, [rdi+40]            ; asm.current-inst-size
+    mov eax, [rdi+44]           ; asm.current-inst-size
 
     mov rdi, [rbp-8]            ; asm*
     mov rsi, rax                ; size
@@ -2325,7 +2324,7 @@ asm_process_statement:
     call tnode_alloc_uint_node
 
     mov rdi, [rbp-8]            ; asm*
-    mov cl, [rdi+41]            ; asm.phase != 0
+    mov cl, [rdi+40]            ; asm.phase != 0
     cmp cl, 0
     jne .label_skip_updation
 
@@ -3434,7 +3433,7 @@ asm_interp_inst_align:
     je .arg_1_integer
 
     mov rdi, [rbp-8]            ; asm*
-    mov cl, [rdi+41]            ; asm.phase = 0
+    mov cl, [rdi+40]            ; asm.phase = 0
     cmp cl, 0
     je .break                   ; ignore evaluation when phase == 0
 
@@ -3468,6 +3467,8 @@ asm_interp_inst_align:
     mov rdx, 0
     div rcx                     ;
     mov [rbp-40], rdx           ;                                  % align
+
+
 
     ;; TODO: implment times and use it
 .loop:
@@ -4847,7 +4848,7 @@ asm_write_rel_operand:
     je .write_rel
 
     mov rdi, [rbp-8]            ; asm*
-    mov cl, [rdi+41]            ; asm.phase = 0
+    mov cl, [rdi+40]            ; asm.phase = 0
     cmp cl, 0
     je .write_dummy             ; ignore evaluation when phase == 0
 
@@ -4887,8 +4888,7 @@ asm_write_rel_operand:
     sub qword [rbp-32], rax     ; offset -= byte-size
 
     mov rdi, [rbp-8]            ; asm*
-    xor rax, rax
-    add al, byte [rdi+40]       ; asm.current-inst-size
+    add eax, dword [rdi+44]     ; asm.current-inst-size
     sub qword [rbp-32], rax     ; offset -= inst-size
 
     mov rdi, [rbp-8]            ; asm*
@@ -5014,7 +5014,7 @@ asm_eval_expr:
 
     ;; phase0 never solves all-nested exprs
     mov rdi, [rbp-8]            ; asm*
-    mov cl, [rdi+41]            ; asm.phase = 0
+    mov cl, [rdi+40]            ; asm.phase = 0
     cmp cl, 0
     je .constant_sized          ; ignore evaluation when phase == 0
 
@@ -5031,7 +5031,7 @@ asm_eval_expr:
 .arg_expr:
     ;; phase0 never solves all-nested exprs
     mov rdi, [rbp-8]            ; asm*
-    mov cl, [rdi+41]            ; asm.phase = 0
+    mov cl, [rdi+40]            ; asm.phase = 0
     cmp cl, 0
     je .dummy_int_node          ; ignore evaluation when phase == 0
 
@@ -5162,7 +5162,7 @@ asm_eval_expr:
 .arg_label:
     ;; phase0 never solves all-nested exprs
     mov rdi, [rbp-8]            ; asm*
-    mov cl, [rdi+41]            ; asm.phase = 0
+    mov cl, [rdi+40]            ; asm.phase = 0
     cmp cl, 0
     je .dummy_int_node          ; ignore evaluation when phase == 0
 
@@ -5309,7 +5309,7 @@ asm_write_node:
     je .write_sexp
 
     mov rdi, [rbp-8]            ; asm*
-    mov cl, [rdi+41]            ; asm.phase = 0
+    mov cl, [rdi+40]            ; asm.phase = 0
     cmp cl, 0
     je .write_dummy             ; ignore evaluation when phase == 0
 
@@ -5532,7 +5532,7 @@ asm_write_u8:
     mov rdx, rsi
     mov byte [rax], dl
 
-    add byte [rdi+40], 1        ; asm.current-inst-size
+    add dword [rdi+44], 1       ; asm.current-inst-size
 
     add rcx, 1
     mov [g_asm_buffer_cursor], rcx
@@ -5556,7 +5556,7 @@ asm_write_u16:
     mov rdx, rsi
     mov word [rax], dx
 
-    add byte [rdi+40], 2        ; asm.current-inst-size
+    add dword [rdi+44], 2       ; asm.current-inst-size
 
     add rcx, 2
     mov [g_asm_buffer_cursor], rcx
@@ -5580,7 +5580,7 @@ asm_write_u32:
     mov rdx, rsi
     mov dword [rax], edx
 
-    add byte [rdi+40], 4        ; asm.current-inst-size
+    add dword [rdi+44], 4       ; asm.current-inst-size
 
     add rcx, 4
     mov [g_asm_buffer_cursor], rcx
@@ -5604,7 +5604,7 @@ asm_write_u64:
     mov rdx, rsi
     mov qword [rax], rdx
 
-    add byte [rdi+40], 8        ; asm.current-inst-size
+    add dword [rdi+44], 8       ; asm.current-inst-size
 
     add rcx, 8
     mov [g_asm_buffer_cursor], rcx
@@ -5736,7 +5736,7 @@ asm_add_consts:
     mov [rbp-16], rsi           ; sexp*, symbol
     mov [rbp-8], rdi            ; asm*
 
-    mov cl, [rdi+41]            ; asm.phase != 0
+    mov cl, [rdi+40]            ; asm.phase != 0
     cmp cl, 0
     jne .break
 
@@ -6023,10 +6023,8 @@ asm_set_inst_size:
 
     mov rax, g_asm_inst_sizes
     mov rcx, [rdi+32]           ; asm.inst_index
-    add rax, rcx                ; g_asm_inst_sizes[asm.inst_index]*
-
-    xor rcx, rcx
-    mov cl, byte [rax]          ; (byte)g_asm_inst_sizes[asm.inst_index]
+    lea rax, [rax+rcx*4]
+    mov ecx, dword [rax]        ; (u32)g_asm_inst_sizes[asm.inst_index]
     cmp rcx, rsi
     je .skip_size_changed
 
@@ -6034,7 +6032,7 @@ asm_set_inst_size:
 
 .skip_size_changed:
     mov rcx, rsi
-    mov byte [rax], cl          ; g_asm_inst_sizes[asm.inst_index] = (byte)size
+    mov dword [rax], ecx        ; g_asm_inst_sizes[asm.inst_index] = (u32)size
 
     ;; debug
     mov rdi, rsi                ; size
@@ -6045,7 +6043,7 @@ asm_set_inst_size:
 
     ;;
     mov rdi, [rbp-8]            ; asm*
-    mov cl, [rdi+41]            ; asm.phase == 0
+    mov cl, [rdi+40]            ; asm.phase == 0
     cmp cl, 0
     je .break
 
@@ -6070,10 +6068,8 @@ asm_accum_inst_size:
     cmp rcx, rsi
     je .break
 
-    xor rax, rax
     mov rdx, g_asm_inst_sizes   ; offset
-    add rdx, rcx                ; counter
-    mov al, byte [rdx]          ; (byte)offset[counter] (inst-size)
+    mov eax, [rdx+rcx*4]        ; (byte)offset[counter] (inst-size)
     add [rbp-8], rax            ; size += inst-size
 
     inc rcx                     ; counter
@@ -6654,7 +6650,7 @@ g_asm_buffer:  times app_max_asm_buffer_size db 0
 g_asm_buffer_size:  dq 0
 g_asm_buffer_cursor:dq 0
 
-g_asm_inst_sizes:   times 600 db 0
+g_asm_inst_sizes:   times 600 dd 0
 
 g_sexp_objects:  resb 24 * app_max_sexp_objects_count
 g_sexp_objects_count:  dq 0
