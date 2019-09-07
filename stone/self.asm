@@ -6,6 +6,7 @@ segment_align:  equ 0x1000
 app_max_code_buffer_size:   equ 0x10000
 app_max_asm_buffer_size:    equ 0x8000
 app_max_sexp_objects_count: equ 0x8000
+app_max_heap:   equ 0x8000
 
 ;;; ELF Header
     ;; e_ident
@@ -123,13 +124,27 @@ section_text_begin:
 _start:
     push rbp
     mov rbp, rsp
-    sub rsp, 8
+    sub rsp, 56
+
+    ;; parser {
+    ;;   char* buffer                , 0
+    ;;   u64   offset                , 8
+    ;;   u64   status = 2  finished  , 16
+    ;:                | 1  failed
+    ;:                | 0  running
+    ;;   sexp* last-label            , 24
+    ;; }
+    mov qword [rbp-48], g_code_buffer ; char*, buffer
+    mov qword [rbp-40], 0       ; u64, offset
+    mov qword [rbp-32], 0       ; u64, status
+    mov qword [rbp-24], 0       ; sexp*, last-label
 
     mov qword [rbp-8], 0        ; statements
 
     call load_code_from_stdin
     ;; call print_loaded_code_to_stdout
 
+    lea rdi, [rbp-48]           ; parser*
     call parse_code
     mov [rbp-8], rax
 
@@ -185,27 +200,17 @@ print_asm_to_stderr:
     syscall
     ret
 
+;;; rdi: parser*
 parse_code:
     push rbp
     mov rbp, rsp
-    sub rsp, 88
+    sub rsp, 80
 
-    ;; parser {
-    ;;   char* buffer
-    ;;   u64   offset
-    ;;   u64   status = 2  finished
-    ;:                | 1  failed
-    ;:                | 0  running
-    ;; }
-    ;; rbp-32: char*, buffer
-    mov qword [rbp-32], g_code_buffer
-    ;; rbp-24: u64, offset
-    mov qword [rbp-24], 0
-    ;; rbp-16: u64, status
-    mov qword [rbp-16], 0
-    ;; rbp-8: *parser
-    lea rax, [rbp-32]
-    mov [rbp-8], rax
+    mov qword [rbp-56], 0       ; statements     : (new-statement . nil)
+    mov qword [rbp-48], 0       ; last-statement : (new-statement . nil)
+    mov qword [rbp-40], 0       ; statement
+
+    mov [rbp-8], rdi            ; parser*
 
 .loop:
     mov rdi, [rbp-8]
@@ -412,6 +417,10 @@ parse_statement:
     jmp .succeeded
 
 .label_found:
+    mov rdi, [rbp-8]            ; parser*
+    mov rsi, [rbp-24]           ; value
+    call parser_set_last_label
+
     ;; ((0, value), nil)
     mov rdi, 0
     call sexp_alloc_int
@@ -1694,8 +1703,12 @@ parse_label_statement:
 parse_label:
     push rbp
     mov rbp, rsp
-    sub rsp, 24
+    sub rsp, 88
 
+    mov qword [rbp-56], 0       ; char*, new-label-ptr
+    mov qword [rbp-48], 0       ; last-label
+    mov qword [rbp-40], 0       ; label-size
+    mov qword [rbp-32], 0       ; is_local
     mov qword [rbp-24], 0       ; node
     mov qword [rbp-16], 0       ; u64, initial offset
     mov [rbp-8], rdi            ; *parser
@@ -1710,6 +1723,7 @@ parse_label:
     je .skip
 
     ;; local-label
+    mov qword [rbp-32], 1       ; is_local
 
 .skip:
     ;; symbol
@@ -1721,6 +1735,88 @@ parse_label:
     call parser_is_failed
     cmp rax, 0
     jne .failed
+
+    cmp qword [rbp-32], 0       ; is_local
+    je .ok
+
+    ;; make local-name
+    mov rdi, [rbp-8]            ; parser*
+    call parser_get_last_label
+    cmp rax, 0
+    jne .has_last_label
+
+    mov rdi, 0                  ; nil
+    mov rsi, 0                  ; len = 0
+    call sexp_alloc_string_view
+
+.has_last_label:
+    mov [rbp-48], rax           ; last-label
+
+    mov rdi, [rbp-24]           ; symbol
+    call sexp_internal_string_length
+    add [rbp-40], rax           ; label-size += len(symbol)
+
+    mov rdi, [rbp-48]           ; last-label
+    call sexp_internal_string_length
+    add [rbp-40], rax           ; label-size += len(last-label)
+
+    add qword [rbp-40], 2       ; label-size += len(".") & null-term
+
+    mov rdi, [rbp-40]           ; label-size
+    call runtime_malloc
+    mov [rbp-56], rax           ; new-label-ptr
+
+    ;; last
+    mov rdi, [rbp-48]           ; last-label
+    call sexp_internal_string_ptr
+    mov [rbp-64], rax           ; last-label-ptr
+
+    mov rdi, [rbp-48]           ; last-label
+    call sexp_internal_string_length
+    mov [rbp-72], rax           ; last-label-length
+
+    ;; current
+    mov rdi, [rbp-24]           ; current-label
+    call sexp_internal_string_ptr
+    mov [rbp-80], rax           ; current-label-ptr
+
+    mov rdi, [rbp-24]           ; current-label
+    call sexp_internal_string_length
+    mov [rbp-88], rax           ; current-label-length
+
+    ;;
+    mov rdi, [rbp-56]           ; new-label-ptr
+    mov rsi, [rbp-40]           ; label-size
+    sub rsi, 1                  ; null-term
+    mov rdx, [rbp-64]           ; last-label-ptr
+    mov rcx, [rbp-72]           ; last-label-length
+    call runtime_strcpy
+
+    ;;
+    mov rdi, [rbp-56]           ; new-label-ptr
+    add rdi, [rbp-72]
+    mov rsi, [rbp-40]           ; label-size
+    sub rsi, 1                  ; null-term
+    sub rsi, [rbp-72]           ; last-label-length
+    mov rdx, str_dot
+    mov rcx, 1
+    call runtime_strcpy
+
+    ;;
+    mov rdi, [rbp-56]           ; new-label-ptr
+    add rdi, [rbp-72]
+    add rdi, 1
+    mov rsi, [rbp-40]           ; label-size
+    sub rsi, 1                  ; null-term
+    sub rsi, [rbp-72]           ; last-label-length
+    sub rsi, 1
+    mov rdx, [rbp-80]
+    mov rcx, [rbp-88]
+    call runtime_strcpy
+
+    mov rdi, [rbp-56]           ; new-label-ptr
+    call sexp_alloc_string
+    mov [rbp-24], rax
 
     jmp .ok
 
@@ -1817,6 +1913,18 @@ parser_set_finished:
     or rax, 0x00000002
     mov [rdi+16], rax
     ret
+
+;;; rdi: parser*
+;;; rsi: sexp*, symbol
+parser_set_last_label:
+    mov [rdi+24], rsi           ; last-symbol
+    ret
+
+;;; rdi: parser*
+parser_get_last_label:
+    mov rax, [rdi+24]           ; last-symbol
+    ret
+
 
 ;;; rdi: *parser
 parser_step_char:
@@ -4697,7 +4805,7 @@ inst_set_r_digit_operands:
 ;;; rdi: asm*
 ;;; rsi: u64, /r
 ;;; rdx: sexp*(tnode), effective-reg
-asm_inst_set_r_digit_operands
+asm_inst_set_r_digit_operands:
     lea rdi, [rdi+56]           ; asm.inst*
     call inst_set_r_digit_operands
     ret
@@ -6674,6 +6782,52 @@ runtime_strcmp:
     leave
     ret
 
+
+;;; rdi: char*, dst
+;;; rsi: u64  , dst
+;;; rdx: char*, src
+;;; rcx: u64  , src
+runtime_strcpy:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 40
+
+    mov [rbp-32], rcx           ; src-len
+    mov [rbp-24], rdx           ; char*, src
+    mov [rbp-16], rsi           ; dst-len
+    mov [rbp-8], rdi            ; char*, dst
+
+    mov rcx, 0
+
+.loop:
+    cmp rcx, [rbp-32]           ; i >= src-len
+    jge .break
+    cmp rcx, [rbp-16]           ; i >= dst-len
+    jge .break
+
+    mov rdx, [rbp-24]           ; src[i]*
+    mov dl, [rdx]               ; src[i]
+    mov rax, [rbp-8]            ; dst[i]*
+    mov [rax], dl               ; dst[i] = src[i]
+
+    inc qword [rbp-24]
+    inc qword [rbp-8]
+
+    inc rcx
+    jmp .loop
+
+.matched:
+    mov rax, 1
+    jmp .break
+
+.bad:
+    xor rax, rax
+
+.break:
+    leave
+    ret
+
+
 ;;; rdi: char*
 runtime_string_hash:
     push rbp
@@ -6733,6 +6887,29 @@ runtime_exit:
     mov rax, 60
     syscall
 
+;;; rdi: u64, size
+runtime_malloc:
+    mov rax, [g_heap_size]
+    mov rcx, app_max_heap
+    sub rcx, rdi
+    cmp rax, rcx       ; heap_size > max - size
+    jg .no_memory
+
+    mov rax, g_heap
+    add rax, [g_heap_size]      ; g_heap + offset
+
+    add qword [g_heap_size], rdi
+
+    jmp .break
+
+.no_memory:
+    mov rdi, 60
+    call runtime_exit
+    jmp .break
+
+.break:
+    ret
+
 section_text_end:
     ;; --< text
 
@@ -6751,17 +6928,20 @@ ret_code:   dq 42
 g_sexp_symbol_doller:   dq 0
 g_sexp_symbol_doller_doller:   dq 0
 
-g_code_buffer:  times app_max_code_buffer_size db 0
+g_code_buffer:  resb app_max_code_buffer_size
 g_code_size:    dq 0
 
-g_asm_buffer:  times app_max_asm_buffer_size db 0
+g_asm_buffer:  resb app_max_asm_buffer_size
 g_asm_buffer_size:  dq 0
 g_asm_buffer_cursor:dq 0
 
-g_asm_inst_sizes:   times 0x1000 dd 0
+g_asm_inst_sizes:   resd 0x1000
 
 g_sexp_objects:  resb 24 * app_max_sexp_objects_count
 g_sexp_objects_count:  dq 0
+
+g_heap: resb app_max_heap
+g_heap_size:     dq 0
 
 section_bss_end:
     ;; --< bss
@@ -6780,6 +6960,7 @@ str_paren_l:    db "(", 0
 str_paren_r:    db ")", 0
 str_colon:      db ":", 0
 str_comma:      db ",", 0
+str_dot:        db ".", 0
 
 str_g_symbol_doller:    db "$", 0
 str_g_symbol_doller_doller: db "$$", 0
