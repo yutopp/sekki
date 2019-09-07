@@ -5201,9 +5201,6 @@ asm_eval_expr:
     mov rdi, [rbp-8]            ; asm*
     call asm_current_loc
 
-    mov rdi, [rbp-8]            ; asm*
-    call asm_current_loc
-
     mov rdi, rax
     call sexp_alloc_int
     mov rdi, rax
@@ -5245,27 +5242,46 @@ asm_segment_base:
 
 
 ;;; rdi: asm*
-asm_current_loc:
+;;; rsi: u64, inst-index
+asm_inst_loc:
     push rbp
     mov rbp, rsp
     sub rsp, 24
 
-    mov qword [rbp-16], 0       ; loc
-    mov qword [rbp-8], rdi      ; asm*
+    mov qword [rbp-24], 0       ; loc
+    mov [rbp-16], rsi           ; inst-index
+    mov [rbp-8], rdi            ; asm*
+
+    mov rdi, 0                  ; NOTE: not used-now
+    mov rsi, [rbp-16]           ; inst-index
+    call asm_accum_inst_size
+    mov [rbp-24], rax           ; loc
+
+    ;; base
+    mov rdi, [rbp-8]            ; asm*
+    call asm_segment_base
+    add [rbp-24], rax           ; loc += base
+
+    ;; return
+    mov rax, [rbp-24]
+
+    leave
+    ret
+
+;;; rdi: asm*
+asm_current_loc:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 8
+
+    mov [rbp-8], rdi            ; asm*
 
     mov rdi, [rbp-8]            ; asm*
     call asm_current_inst_index
 
-    mov rdi, 0                  ; NOTE: not used-now
-    mov rsi, rax                ; inst-index
-    call asm_accum_inst_size
-    mov [rbp-16], rax           ; loc
-
     mov rdi, [rbp-8]            ; asm*
-    call asm_segment_base
-    add [rbp-16], rax           ; loc += base
-
-    mov rax, [rbp-16]
+    mov rsi, rax
+    call asm_inst_loc
 
     leave
     ret
@@ -5638,53 +5654,54 @@ asm_add_labels:
 asm_find_labels:
     push rbp
     mov rbp, rsp
-    sub rsp, 24
+    sub rsp, 40
 
-    mov [rbp-24], rsi           ; sexp*, finding-symbol
-    mov qword [rbp-16], 0       ; sexp*, current
-    mov qword [rbp-8], 0        ; sexp*, labels
+    mov [rbp-32], rsi           ; sexp*, finding-symbol
+    mov qword [rbp-24], 0       ; sexp*, current
+    mov qword [rbp-16], 0       ; sexp*, labels
+    mov [rbp-8], rdi            ; asm*
 
     mov rax, [rdi]              ; asm.labels
-    mov [rbp-8], rax            ;
+    mov [rbp-16], rax           ;
 
 .loop:
-    mov rax, [rbp-8]            ; labels
+    mov rax, [rbp-16]           ; labels
     cmp rax, 0
     je .break                   ; not-found
 
-    mov rdi, [rbp-8]            ; labels
+    mov rdi, [rbp-16]           ; labels
     call sexp_car
-    mov [rbp-16], rax           ; current
+    mov [rbp-24], rax           ; current
 
-    mov rdi, [rbp-16]           ; current
+    mov rdi, [rbp-24]           ; current
     call sexp_car               ; symbol
     mov rdi, rax
-    mov rsi, [rbp-24]           ; finding-symbol
+    mov rsi, [rbp-32]           ; finding-symbol
     call sexp_equals
 
     cmp rax, 1
     je .found
 
     ;; step
-    mov rdi, [rbp-8]            ; labels
+    mov rdi, [rbp-16]           ; labels
     call sexp_cdr
-    mov [rbp-8], rax
+    mov [rbp-16], rax
 
     jmp .loop
 
 .found:
-    mov rdi, [rbp-16]           ; current, (symbol . (type . value))
+    mov rdi, [rbp-24]           ; current, (symbol . (type . value))
     call sexp_cdr               ; (type . value) and value must be integer
-    mov [rbp-16], rax           ; over-write
+    mov [rbp-24], rax           ; over-write
 
-    mov rdi, [rbp-16]           ; (type . value)
+    mov rdi, [rbp-24]           ; (type . value)
     call tnode_value            ; value
     mov rdi, rax
     call sexp_internal_int_value ; N
 
-    mov rdi, 0                  ; NOTE: not used-now
+    mov rdi, [rbp-8]            ; asm*
     mov rsi, rax                ; inst-index
-    call asm_accum_inst_size
+    call asm_inst_loc
 
     ;; re-construct
     mov rdi, rax                ; accumurated inst-index
