@@ -2307,6 +2307,7 @@ asm_process_statement:
     cmp rax, 1
     je .inst
 
+.failed:
     mov rdi, str_ice_invalid_statement
     call runtime_print_string
 
@@ -3377,17 +3378,24 @@ asm_interp_inst_equ:
     ;; TODO: check-length
 
     ;; 1st
-    mov rdi, [rbp-8]            ; asm*
-    lea rsi, [rbp-16]           ; (hd . rest)*
-    call asm_step_args_with_eval
+    lea rdi, [rbp-16]           ; (hd . rest)*
+    call tnode_step_args
+    mov [rbp-24], rax           ; args[1]
 
+    ;;
     mov rdi, [rbp-8]            ; asm*
-    mov rcx, [rdi+16]           ; asm.last-symbol
+    call asm_state_snapshot_save
+    mov rcx, rax
+
+    ;; last-symbol
+    mov rdi, [rbp-8]            ; asm*
+    mov rax, [rdi+16]           ; asm.last-symbol
 
     ;; update labels
     mov rdi, [rbp-8]            ; asm*
-    mov rsi, rcx                ; symbol
-    mov rdx, rax                ; (type . evaled-expr)
+    mov rsi, rax                ; symbol
+    mov rdx, [rbp-24]           ; (type . raw-expr)
+    ;; mov rcx, rcx             ; snapshot
     call asm_add_consts
 
     leave
@@ -5001,14 +5009,14 @@ asm_eval_expr:
     cmp rax, 2                  ; label
     je .arg_label
 
+    cmp rax, 8                  ; expr
+    je .arg_expr
+
     ;; phase0 never solves all-nested exprs
     mov rdi, [rbp-8]            ; asm*
     mov cl, [rdi+41]            ; asm.phase = 0
     cmp cl, 0
     je .constant_sized          ; ignore evaluation when phase == 0
-
-    cmp rax, 8                  ; expr
-    je .arg_expr
 
     cmp rax, 6
     je .arg_addressing_expr
@@ -5021,6 +5029,12 @@ asm_eval_expr:
     call runtime_exit
 
 .arg_expr:
+    ;; phase0 never solves all-nested exprs
+    mov rdi, [rbp-8]            ; asm*
+    mov cl, [rdi+41]            ; asm.phase = 0
+    cmp cl, 0
+    je .dummy_int_node          ; ignore evaluation when phase == 0
+
     ;; eval-lhs
     mov rdi, [rbp-16]           ; sexp*(tnode)
     call tnode_value
@@ -5180,11 +5194,13 @@ asm_eval_expr:
     cmp rax, 0
     jne .break                  ; found
 
-    mov rax, [rbp-16]           ; pass-through
-    jmp .break
+    jmp .invalid_op
 
 .arg_label_doller:
     ;; current location
+    mov rdi, [rbp-8]            ; asm*
+    call asm_current_loc
+
     mov rdi, [rbp-8]            ; asm*
     call asm_current_loc
 
@@ -5692,29 +5708,40 @@ asm_find_labels:
 ;;; rdi: asm*
 ;;; rsi: sexp*, symbol
 ;;; rdx: sexp*, tnode, (type . expr)
+;;; sexp*, snapshot
 asm_add_consts:
     push rbp
     mov rbp, rsp
-    sub rsp, 24
+    sub rsp, 40
 
-    mov [rbp-24], rdx           ;
-    mov [rbp-16], rsi           ;
+    mov [rbp-32], rcx           ; sexp*, snapshot
+    mov [rbp-24], rdx           ; sexp*(tnode), value
+    mov [rbp-16], rsi           ; sexp*, symbol
     mov [rbp-8], rdi            ; asm*
 
-    mov rdi, [rbp-16]           ; symbol
-    mov rsi, [rbp-24]           ; tnode
-    call sexp_alloc_cons        ; (symbol, (type . value))
+    mov cl, [rdi+41]            ; asm.phase != 0
+    cmp cl, 0
+    jne .break
 
-    ;; prepend the label. e.g. ((b, (ty0 . 10)), ((a, (ty1 . 0)), nil))
-    mov rdi, rax                ; (symbol, (type . value))
+    mov rdi, [rbp-24]           ; tnode
+    mov rsi, [rbp-32]           ; snapshot
+    call sexp_alloc_cons        ; ((type . value) . snapshot)
+
+    mov rdi, [rbp-16]           ; symbol
+    mov rsi, rax                ; ((type . value) . snapshot)
+    call sexp_alloc_cons        ; (symbol, ((type . value) . snapshot))
+
+    ;; prepend the label. e.g. ((b, ((ty0 . 10) . s)), ((a, ((ty1 . 0) . s)), nil))
+    mov rdi, rax                ; (symbol, ((type . value) . snapshot))
     mov rcx, [rbp-8]            ; asm*
     mov rsi, [rcx+48]           ; asm.consts
-    call sexp_alloc_cons        ; ((symbol, (type . value)), asm.consts)
+    call sexp_alloc_cons        ; ((symbol, ((type . value) . snapshot)), asm.consts)
 
     ;; update labels
     mov rcx, [rbp-8]            ; asm*
-    mov [rcx+48], rax           ; asm.consts <- ((symbol, (type . value)), asm.consts)
+    mov [rcx+48], rax           ; asm.consts <- ((symbol, ((type . value) . snapshot)), asm.consts)
 
+.break:
     leave
     ret
 
@@ -5724,43 +5751,70 @@ asm_add_consts:
 asm_find_consts:
     push rbp
     mov rbp, rsp
-    sub rsp, 24
+    sub rsp, 56
 
-    mov [rbp-24], rsi           ; sexp*, finding-symbol
-    mov qword [rbp-16], 0       ; sexp*, current
-    mov qword [rbp-8], 0        ; sexp*, consts
+    mov qword [rbp-56], 0       ; return-value
+    mov qword [rbp-48], 0       ; snapshot
+    mov [rbp-40], rsi           ; sexp*, finding-symbol
+    mov qword [rbp-32], 0       ; sexp*, current
+    mov qword [rbp-16], 0       ; sexp*, consts
+    mov [rbp-8], rdi            ; asm*
 
     mov rax, [rdi+48]           ; asm.consts
-    mov [rbp-8], rax            ;
+    mov [rbp-16], rax           ;
 
 .loop:
-    mov rax, [rbp-8]            ; consts
+    mov rax, [rbp-16]           ; consts
     cmp rax, 0
     je .break                   ; not-found
 
-    mov rdi, [rbp-8]            ; consts
+    mov rdi, [rbp-16]           ; consts
     call sexp_car
-    mov [rbp-16], rax           ; current
+    mov [rbp-32], rax           ; current
 
-    mov rdi, [rbp-16]           ; current
+    mov rdi, [rbp-32]           ; current
     call sexp_car               ; symbol
     mov rdi, rax
-    mov rsi, [rbp-24]           ; finding-symbol
+    mov rsi, [rbp-40]           ; finding-symbol
     call sexp_equals
 
     cmp rax, 1
     je .found
 
     ;; step
-    mov rdi, [rbp-8]            ; consts
+    mov rdi, [rbp-16]           ; consts
     call sexp_cdr
-    mov [rbp-8], rax
+    mov [rbp-16], rax
 
     jmp .loop
 
 .found:
-    mov rdi, [rbp-16]           ; current, (symbol . (type . value))
+    mov rdi, [rbp-32]           ; current, (symbol . ((type . value) , snapshot))
     call sexp_cdr
+    mov [rbp-32], rax           ; ((type . value) , snapshot)
+
+    mov rdi, [rbp-8]            ; asm*
+    call asm_state_snapshot_save
+    mov [rbp-48], rax           ; snapshot-before
+
+    mov rdi, [rbp-32]           ; ((type . value) , snapshot)
+    call sexp_cdr
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, rax                ; snapshot
+    call asm_state_snapshot_load
+
+    mov rdi, [rbp-32]           ; ((type . value) , snapshot)
+    call sexp_car
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, rax                ; (type . value)
+    call asm_eval_expr
+    mov [rbp-56], rax           ; return-value
+
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-48]           ; snapshot-before
+    call asm_state_snapshot_load
+
+    mov rax, [rbp-56]           ; return-value
 
     jmp .break
 
@@ -5905,6 +5959,30 @@ asm_fill_replacements:
     leave
     ret
 
+;;; rdi: asm*
+asm_state_snapshot_save:
+    mov rdi, [rdi+32]           ; asm.inst_index
+    call sexp_alloc_int
+    ret
+
+;;; rdi: asm*
+;;; rsi: sexp*, state
+asm_state_snapshot_load:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32
+
+    mov [rbp-16], rsi           ; sexp*, state
+    mov [rbp-8], rdi            ; asm*
+
+    mov rdi, [rbp-16]
+    call sexp_internal_int_value
+
+    mov rdi, [rbp-8]            ; asm*
+    mov [rdi+32], rax           ; asm.inst_index
+
+    leave
+    ret
 
 ;;; rdi: asm*
 asm_step_inst_index:
