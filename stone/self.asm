@@ -2989,25 +2989,19 @@ asm_write_inst_cmp:
     mov [rbp-48], rax           ; size
 
     mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-48]           ; size
-    mov rdx, 0                  ;
-    mov rcx, [rbp-24]           ; args[1], r/m, sexp*(tnode)
-    call asm_write_rex_if_needed
-
-    mov rdi, [rbp-8]            ; asm*
     mov rsi, 0x81               ; CMP
-    call asm_write_u8
+    call asm_inst_append_opcode
 
     mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-24]           ; args[1], effective-reg
-    mov rdx, 7                  ; ModR/M, /r-digit
-    call asm_write_operands
+    mov rsi, 7                  ; mod r/m, /r-degit
+    mov rdx, [rbp-24]           ; args[1], effective-reg
+    call asm_inst_set_r_digit_operands
 
-    ;; disp
+    ;; imm
     mov rdi, [rbp-8]            ; asm*
     mov rsi, [rbp-32]           ; arg[2]
     mov rdx, [rbp-48]           ; size
-    call asm_write_sign_ext_imm_operand
+    call asm_inst_set_imm_sign_ext
 
     jmp .break
 
@@ -3017,25 +3011,19 @@ asm_write_inst_cmp:
     mov [rbp-48], rax           ; update-size
 
     mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-48]           ; size
-    mov rdx, 0                  ;
-    mov rcx, [rbp-24]           ; args[1], r/m, sexp*(tnode)
-    call asm_write_rex_if_needed
-
-    mov rdi, [rbp-8]            ; asm*
     mov rsi, 0x83               ; CMP
-    call asm_write_u8
+    call asm_inst_append_opcode
 
     mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-24]           ; args[1], effective-reg
-    mov rdx, 7                  ; ModR/M, /r-digit
-    call asm_write_operands
+    mov rsi, 7                  ; mod r/m, /r-degit
+    mov rdx, [rbp-24]           ; args[1], effective-reg
+    call asm_inst_set_r_digit_operands
 
-    ;; disp
+    ;; imm
     mov rdi, [rbp-8]            ; asm*
     mov rsi, [rbp-32]           ; arg[2]
     mov rdx, 1                  ; size
-    call asm_write_sign_ext_imm_operand
+    call asm_inst_set_imm_sign_ext
 
     jmp .break
 
@@ -4152,7 +4140,7 @@ asm_inst_set_imm_sign_ext:
     mov [rbp-16], rsi           ; sexp*(node)
     mov [rbp-8], rdi            ; asm*
 
-    cmp rdx, [rbp-24]           ; size
+    cmp qword [rbp-24], 8       ; size
     jne .skip_adjust
 
     mov rdi, [rbp-8]            ; asm*
@@ -4160,7 +4148,7 @@ asm_inst_set_imm_sign_ext:
     call inst_set_rex_w
 
     ;; TODO: warning
-    mov qword [rbp-24], 4        ; size from imm64 to imm32
+    mov qword [rbp-24], 4       ; size from imm64 to imm32
 
 .skip_adjust:
     mov rdx, [rbp-24]           ; byte-size
