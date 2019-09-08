@@ -2156,6 +2156,7 @@ tnode_value:
     call sexp_cdr
     ret
 
+
 ;;; rdi: sexp*, (type . value)
 tnode_calc_imm_size:
     push rbp
@@ -2572,6 +2573,78 @@ asm_process_statement:
 .break:
     leave
     ret
+
+;;; rdi: asm*
+;;; rsi: inst*
+asm_update_inst_if_efficient:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 24
+
+    mov qword [rbp-24], 0       ; inst-size
+    mov [rbp-16], rsi           ; inst*
+    mov [rbp-8], rdi            ; asm*
+
+    ;; debug
+    call runtime_print_newline
+    call runtime_print_newline
+    mov rdi, [rbp-8]            ; asm*
+    call asm_inst_current_size
+    mov rdi, rax
+    call runtime_print_uint64
+    call runtime_print_newline
+
+    mov rdi, [rbp-16]           ; inst*
+    call inst_current_size
+    mov rdi, rax
+    call runtime_print_uint64
+    call runtime_print_newline
+    call runtime_print_newline
+    call runtime_print_newline
+    ;; debug
+
+    mov rdi, [rbp-8]            ; asm*
+    call asm_inst_current_size
+    mov [rbp-24], rax
+    cmp qword [rbp-24], 0
+    je .update
+
+    mov rdi, [rbp-16]           ; inst*
+    call inst_current_size
+    cmp rax, [rbp-24]           ; size(inst) < size(asm.inst)
+    jl .update
+
+    jmp .break
+
+.update:
+    ;; [0, 8)
+    mov rcx, [rbp-16]           ; inst*
+    mov rcx, [rcx]              ; inst[0, 8)
+    mov rax, [rbp-8]            ; asm*
+    mov [rax+56], rcx           ; asm.inst[0, 8), 56
+
+    ;; [8, 16)
+    mov rcx, [rbp-16]           ; inst*
+    mov rcx, [rcx+8]            ; inst[0, 8)
+    mov rax, [rbp-8]            ; asm*
+    mov [rax+64], rcx           ; asm.inst[0, 8), 56
+
+    ;; [16, 24)
+    mov rcx, [rbp-16]           ; inst*
+    mov rcx, [rcx+16]           ; inst[0, 8)
+    mov rax, [rbp-8]            ; asm*
+    mov [rax+72], rcx           ; asm.inst[0, 8), 56
+
+    ;; [24, 32)
+    mov rcx, [rbp-16]           ; inst*
+    mov rcx, [rcx+24]           ; inst[0, 8)
+    mov rax, [rbp-8]            ; asm*
+    mov [rax+80], rcx           ; asm.inst[24, 32), [80, 88)
+
+.break:
+    leave
+    ret
+
 
 ;;; rdi: sexp*(tnode), lhs, dst
 ;;; rsi: sexp*(tnode), rhs, src
@@ -3134,7 +3207,7 @@ asm_write_inst_push:
 
 ;; PUSH imm
 .encode_i:
-    mov rdi, 50
+    mov rdi, 51
     call runtime_exit
     jmp .break
 
@@ -3465,58 +3538,63 @@ inst_pattern_print:
 ;;; rdi: pattern*
 ;;; rsi:
 inst_pattern_set_type:
-    mov rax, [rdi]
-    mov rcx, rsi
-    and rcx, 0xff
-    shl rcx, 16                 ; 2 * 8 bits
-    or rax, rcx
-    mov [rdi], rax
+    mov rax, rsi                ; value
+    mov byte [rdi+3], al
+    ret
+
+;;; rdi: pattern*
+inst_pattern_get_type:
+    mov cl, [rdi+3]
+    xor rax, rax
+    mov al, cl
     ret
 
 ;;; rdi: pattern*
 ;;; rsi:
 inst_pattern_set_size:
-    mov rax, [rdi]
-    mov rcx, rsi
-    and rcx, 0xff
-    shl rcx, 8                  ; 1 * 8 bits
-    or rax, rcx
-    mov [rdi], rax
+    mov rax, rsi                ; value
+    mov byte [rdi+2], al
+    ret
+
+;;; rdi: pattern*
+inst_pattern_get_size:
+    mov cl, [rdi+2]
+    xor rax, rax
+    mov al, cl
     ret
 
 ;;; rdi: pattern*
 ;;; rsi:
 inst_pattern_set_value:
-    mov rax, [rdi]
-    mov rcx, rsi
-    and rcx, 0xff
-    shl rcx, 0                  ; 0 * 8 bits
-    or rax, rcx
-    mov [rdi], rax
-    ret
-
-
-;;; rdi: pattern*
-inst_pattern_get_type:
-    mov rax, [rdi]
-    shr rax, 16                 ; 2 * 8 bits
-    and rax, 0xff
-    ret
-
-;;; rdi: pattern*
-inst_pattern_get_size:
-    mov rax, [rdi]
-    shr rax, 8                  ; 1 * 8 bits
-    and rax, 0xff
+    mov rax, rsi                ; value
+    mov byte [rdi+1], al
     ret
 
 ;;; rdi: pattern*
 inst_pattern_get_value:
-    mov rax, [rdi]
-    shr rax, 0                  ; 0 * 8 bits
-    and rax, 0xff
+    mov cl, [rdi+1]
+    xor rax, rax
+    mov al, cl
     ret
 
+;;; rdi: sexp*(tnode)
+;;; rsi: pattern*
+inst_pattern_updated_tnode:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 8
+
+    mov [rbp-8], rdi            ; sexp*
+
+    mov rdi, rsi                ; pattern*
+    call inst_pattern_get_size
+
+    mov rdi, [rbp-8]            ; sexp*
+    mov rsi, rax
+    call tnode_size_updated
+
+    leave
+    ret
 
 ;;; rdi: byte*
 ;;; rsi: pattern*
@@ -3529,21 +3607,21 @@ inst_pattern_read:
     mov [rbp-8], rdi            ; byte*
 
     ;;
-    mov rax, [rbp-8]            ; byte
+    mov rax, [rbp-8]            ; byte*
     mov al, byte [rax]
     mov rdi, [rbp-16]           ; pattern*
     mov rsi, rax
     call inst_pattern_set_type
 
     ;;
-    mov rax, [rbp-8]            ; byte
+    mov rax, [rbp-8]            ; byte*
     mov al, byte [rax+1]
     mov rdi, [rbp-16]           ; pattern*
     mov rsi, rax
     call inst_pattern_set_size
 
     ;;
-    mov rax, [rbp-8]            ; byte
+    mov rax, [rbp-8]            ; byte*
     mov al, byte [rax+2]
     mov rdi, [rbp-16]           ; pattern*
     mov rsi, rax
@@ -3560,8 +3638,11 @@ inst_pattern_is_matched:
     mov rbp, rsp
     sub rsp, 40
 
-    mov byte [rbp-24], 0        ; actual
-    mov byte [rbp-23], 0        ; expected
+    mov byte [rbp-24], 0        ; actual-type
+    mov byte [rbp-23], 0        ; expected-type
+
+    mov byte [rbp-22], 0        ; actual-size
+    mov byte [rbp-21], 0        ; expected-size
 
     mov [rbp-16], rsi           ; pattern*, actual
     mov [rbp-8], rdi            ; pattern*, expected
@@ -3570,17 +3651,76 @@ inst_pattern_is_matched:
 
     mov rdi, [rbp-8]            ; expected-pattern
     call inst_pattern_get_type
-    mov [rbp-23], al            ; expected
+    mov [rbp-23], al            ; expected-type
 
     mov rdi, [rbp-16]           ; actual-pattern
     call inst_pattern_get_type
-    mov [rbp-24], al            ; actual
+    mov [rbp-24], al            ; actual-type
 
-    mov al, [rbp-23]
-    cmp al, [rbp-24]
-    jne .not_matched
+    cmp byte [rbp-23], 1        ; expected = register
+    je .expect_register
 
+    cmp byte [rbp-23], 5        ; expected = addressing
+    je .expect_addressing
+
+    cmp byte [rbp-23], 4        ; expected = imm
+    je .expect_imm
+
+    jmp .unexpected
+
+.expect_register:
+    cmp byte [rbp-24], 1        ; actual = register
+    je .type_matched
+
+    jmp .not_matched
+
+.expect_addressing:
+    cmp byte [rbp-24], 5        ; actual = addressing
+    je .type_matched
+
+    cmp byte [rbp-24], 1        ; actual = register
+    je .type_matched
+
+    jmp .not_matched
+
+.expect_imm:
+    cmp byte [rbp-24], 4        ; actual = imm
+    je .type_matched
+
+    jmp .not_matched
+
+.type_matched:
+    ;; check size
+
+    mov rdi, [rbp-8]            ; expected-pattern
+    call inst_pattern_get_size
+    mov [rbp-21], al            ; expected-size
+
+    mov rdi, [rbp-16]           ; actual-pattern
+    call inst_pattern_get_size
+    mov [rbp-22], al            ; actual-size
+
+    cmp byte [rbp-23], 4        ; expected = imm
+    je .size_check_included
+
+    mov al, [rbp-21]            ; expected
+    cmp al, [rbp-22]            ; expected == actual
+    je .size_matched
+
+    jmp .not_matched
+
+.size_check_included:
+    mov al, [rbp-21]            ; expected
+    cmp al, [rbp-22]            ; expected >= actual
+    jge .size_matched
+
+    jmp .not_matched
+
+.size_matched:
     jmp .matched
+
+.unexpected:
+    call runtime_exit
 
 .matched:
     mov rax, 1
@@ -3633,11 +3773,11 @@ asm_infer_size_x_x:
     je .lhs_addressing
 
     ;;
-    mov rdi, 50
+    mov rdi, 52
     call runtime_exit
 
 .lhs_reg:
-    ;; set-lhs-register
+    ;; set-lhs-type
     mov rdi, [rbp-8]            ; lhs
     call tnode_type_tag
     mov rdi, [rbp-40]           ; pattern*
@@ -3669,7 +3809,11 @@ asm_infer_size_x_x:
 .lhs_addressing:
     mov rdi, [rbp-8]            ; lhs
     mov rdx, [rbp-24]           ; rhs
+    mov rdx, [rbp-40]           ; pattern*
     call asm_infer_size_m_x
+
+    mov rdi, 52
+    call runtime_exit
 
     jmp .break
 
@@ -3680,7 +3824,7 @@ asm_infer_size_x_x:
 
 ;;; rdi: lhs
 ;;; rsi: rhs
-;;; rdx:
+;;; rdx: pattern*
 asm_infer_size_r_x:
     push rbp
     mov rbp, rsp
@@ -3718,10 +3862,10 @@ asm_infer_size_r_x:
     je .rhs_bits64_or_lhs_and_rhs_bits32
 
     cmp ax, 0x0802              ; 8, 2 -> 2
-    je .rhs_bits32
+    je .rhs_bits16
 
     cmp ax, 0x0801              ; 8, 1 -> 1
-    je .rhs_bits32
+    je .rhs_bits8
 
     cmp ax, 0x0404              ; 4, 4 -> 4
     je .rhs_bits32
@@ -3798,18 +3942,148 @@ asm_infer_size_r_x:
     ret
 
 
-;;; rdi:
-;;; rsi:
+;;; rdi: lhs
+;;; rsi: rhs
+;;; rdx: pattern*
 asm_infer_size_m_x:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 40
+
+    mov qword [rbp-40], rdx     ; pattern*
+
+    mov qword [rbp-32], 0       ; size or rhs-size
+
+    mov [rbp-24], rsi           ; rhs
+    mov [rbp-8], rdi            ; lhs
+
+    ;; recalc-rhs-size
+    mov rdi, [rbp-24]           ; rhs
+    call tnode_type_size
+    and rax, 0x00ff             ; 0x00RR
+    mov [rbp-32], rax           ; size
+
+    mov rdi, [rbp-8]            ; lhs
+    call tnode_type_size
+    and rax, 0x00ff             ; 0x00RR
+    shl rax, 8                  ; 1 * 8, 0xRR00
+    or [rbp-32], rax            ; size, 0xRRLL
+
+    cmp qword [rbp-32], 0
+    je .size_undecidable
+
+    ;; recalc-rhs-size
+    mov rdi, [rbp-24]           ; rhs
+    call tnode_calc_imm_size
+    and rax, 0x00ff             ; 0x00RR
+    mov [rbp-32], rax           ; size
+
+    mov rdi, [rbp-8]            ; lhs
+    call tnode_type_size
+    cmp rax, 0
+    jne .skip_lhs_updation
+
+    ;; set-lhs-size
+    mov rdi, [rbp-8]            ; lhs
+    call tnode_type_size
+    mov rdi, [rbp-40]           ; pattern*
+    mov rsi, 4                  ; size
+    call inst_pattern_set_size
+
+.skip_lhs_updation:
+    mov rdi, [rbp-8]            ; lhs
+    call tnode_type_size
+    and rax, 0x00ff             ; 0x00RR
+    shl rax, 8                  ; 1 * 8, 0xRR00
+    or [rbp-32], rax            ; size, 0xRRLL
+
+    ;;
+    mov rax, [rbp-32]           ; size
+
+
+
+    cmp ax, 0x0808              ; 8, 8 -> 8
+    je .rhs_bits64
+
+    cmp ax, 0x0800              ; 8, 0 -> 8
+    je .rhs_bits64
+
+    cmp ax, 0x0804              ; 8, 4 -> 4
+    je .rhs_bits32
+
+    cmp ax, 0x0802              ; 8, 2 -> 2
+    je .rhs_bits16
+
+    cmp ax, 0x0801              ; 8, 1 -> 1
+    je .rhs_bits8
+
+    cmp ax, 0x0404              ; 4, 4 -> 4
+    je .rhs_bits32
+
+    cmp ax, 0x0402              ; 4, 2 -> 2
+    je .rhs_bits16
+
+    cmp ax, 0x0201              ; 2, 1 -> 1
+    je .rhs_bits8
+
+    cmp ax, 0x0101              ; 1, 1 -> 1
+    je .rhs_bits8
+
+    jmp .size_undecidable
+
+.rhs_bits64:
+    mov qword [rbp-32], 8       ; rhs-size
+    jmp .update_rhs
+
+.rhs_bits32:
+    mov qword [rbp-32], 4       ; rhs-size
+    jmp .update_rhs
+
+.rhs_bits16:
+    mov qword [rbp-32], 2       ; rhs-size
+    jmp .update_rhs
+
+.rhs_bits8:
+    mov qword [rbp-32], 1       ; rhs-size
+    jmp .update_rhs
+
+.update_rhs:
+    ;; set-rhs-expr
+    mov rdi, [rbp-24]           ; rhs
+    call tnode_type_tag
+    mov rdi, [rbp-40]           ; pattern*
+    add rdi, 8                  ; pattern[1]*
+    mov rsi, rax                ; type
+    call inst_pattern_set_type
+
+    ;; set-rhs-size
+    mov rdi, [rbp-24]           ; rhs
+    call tnode_type_size
+    mov rdi, [rbp-40]           ; pattern*
+    add rdi, 8                  ; pattern[1]*
+    mov rsi, [rbp-32]           ; rhs-size
+    call inst_pattern_set_size
+
+    jmp .break
+
+.size_undecidable:
+    ;;
+    mov rdi, [rbp-32]           ; size
+    call asm_exit_with_error_undecidable_op_size
+
+.break:
+    mov rax, [rbp-40]           ; pattern
+
+    leave
     ret
 
 
 ;;; rdi: asm*
-;;; rsi:
+;;; rsi: inst*
 ;;; rdx: byte*
-;;; rcx
-;;; r8
-inst_pattern_to_inst:
+;;; rcx: args[0]
+;;; r8:  args[1]
+inst_pattern_to_inst_2:
     push rbp
     mov rbp, rsp
     sub rsp, 88
@@ -3818,20 +4092,36 @@ inst_pattern_to_inst:
 
     mov [rbp-48], r8            ; args[2]
     mov [rbp-40], rcx           ; args[1]
-    mov [rbp-32], rdx           ; byte*
+    mov [rbp-32], rdx           ; byte*, template
     mov [rbp-16], rsi           ; inst*
     mov [rbp-8], rdi            ; asm*
 
+    ;; debug
+    mov rdi, [rbp-40]
+    call tnode_type_size
+    mov rdi, rax
+    call runtime_print_uint64
+    call runtime_print_newline
+
+    mov rdi, [rbp-48]
+    call tnode_type_size
+    mov rdi, rax
+    call runtime_print_uint64
+    call runtime_print_newline
+    ;; debug
+
     ;; REX
     mov eax, [rbp-32]           ; byte*
-    mov al, [rax]               ; byte[n], REX
+    xor rcx, rcx
+    mov cl, [rax]               ; byte[n], REX
     inc qword [rbp-32]          ; step-iter, n
 
-    cmp al, 0
+    cmp cl, 0
     je .skip_rex
 
-;    mov rdi, [rbp-8]            ; asm*
-;    call asm_inst_set_rex
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, rcx
+    call inst_set_rex_value
 
 .skip_rex:
     ;; op-code
@@ -3850,9 +4140,9 @@ inst_pattern_to_inst:
     mov al, [rax]               ; byte[n], op-code
     inc qword [rbp-32]          ; step-iter, n
 
-    mov rdi, [rbp-8]            ; asm*
+    mov rdi, [rbp-16]           ; inst*
     mov rsi, rax                ; op-code
-    call asm_inst_append_opcode
+    call inst_append_opcode
 
     dec byte [rbp-56]           ; op-length
     jmp .op_loop
@@ -3866,13 +4156,75 @@ inst_pattern_to_inst:
     cmp al, 0                   ; r, r/m
     je .operand_rm
 
+    cmp al, 1                   ; r/m, r
+    je .operand_mr
+
+    cmp al, 2                   ; imm
+    je .operand_i
+
+    cmp al, 3                   ; r/m, imm
+    je .operand_mi
+
     jmp .not_supported
 
+    ;; r, r/m
 .operand_rm:
-    mov rdi, [rbp-8]            ; asm*
+    mov rdi, [rbp-16]           ; inst*
     mov rsi, [rbp-40]           ; args[1], mod r/m, /r-degit
     mov rdx, [rbp-48]           ; args[2], effective-reg
-    call asm_inst_set_operands
+    call inst_set_operands
+
+    jmp .break
+
+    ;; r/m, r
+.operand_mr:
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, [rbp-48]           ; args[2], mod r/m, /r-degit
+    mov rdx, [rbp-40]           ; args[1], effective-reg
+    call inst_set_operands
+
+    jmp .break
+
+    ;; r, imm
+.operand_i:
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, [rbp-40]           ; args[1]
+    call inst_set_prefix_if
+
+    mov rdi, [rbp-48]           ; args[2]
+    call tnode_type_size
+
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, [rbp-48]           ; arg[2]
+    mov rdx, rax
+    call inst_set_imm_sign_ext
+
+    jmp .break
+
+    ;; r/m, imm
+.operand_mi:
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, [rbp-40]           ; args[1]
+    call inst_set_prefix_if
+
+    mov rax, [rbp-32]           ; byte*
+    xor rcx, rcx
+    mov cl, [rax]               ; byte[n], /r
+    inc qword [rbp-32]          ; step-iter, n
+
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, rcx                ; mod r/m, /r-degit
+    mov rdx, [rbp-40]           ; args[1], effective-reg
+    call inst_set_r_digit_operands
+
+    mov rdi, [rbp-48]           ; args[2]
+    call tnode_type_size
+
+    ;; imm
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, [rbp-48]           ; arg[2]
+    mov rdx, rax
+    call inst_set_imm_sign_ext
 
     jmp .break
 
@@ -3890,14 +4242,13 @@ inst_pattern_to_inst:
 asm_write_inst_add:
     push rbp
     mov rbp, rsp
-    sub rsp, 80
+    sub rsp, 88
 
+    mov qword [rbp-56], 0                       ; matched
+    mov qword [rbp-48], g_asm_inst_template_add ; template**
 
-
-    mov qword [rbp-48], 0       ; size
-
-    mov qword [rbp-32], 0       ; args[2], sexp*(tnode)
-    mov qword [rbp-24], 0       ; args[1], sexp*(tnode)
+    mov qword [rbp-32], 0       ; args[1], sexp*(tnode)
+    mov qword [rbp-24], 0       ; args[2], sexp*(tnode)
 
     mov [rbp-16], rsi           ; args: sexp*
     mov [rbp-8], rdi            ; asm*
@@ -3908,32 +4259,58 @@ asm_write_inst_add:
     mov rdi, [rbp-8]            ; asm*
     lea rsi, [rbp-16]           ; (hd . rest)*
     call asm_step_args_with_eval ; hd
-    mov [rbp-24], rax           ; args[1]
+    mov [rbp-32], rax           ; args[1]
 
     ;; args[2]
     mov rdi, [rbp-8]            ; asm*
     lea rsi, [rbp-16]           ; (hd . rest)*
     call asm_step_args_with_eval ; hd
-    mov [rbp-32], rax           ; args[2]
+    mov [rbp-24], rax           ; args[2]
+
+.loop:
+    mov rax, [rbp-48]           ; template**
+    mov rax, [rax]              ; template*
+    cmp rax, 0
+    je .finish
 
     mov rdi, [rbp-8]            ; asm*
-    mov rsi, g_asm_inst_add_r32_rm32
+    mov rsi, rax                ; template*
     mov rdx, 2                  ; args-num
-    mov rcx, [rbp-24]           ; args[1]
-    mov r8, [rbp-32]            ; args[2]
+    lea rcx, [rbp-32]           ; args**
     call gen
+    or [rbp-56], rax
+
+    add qword [rbp-48], 8       ;
+    jmp .loop
+
+.finish:
+    cmp qword [rbp-56], 0       ; matched
+    jne .break
+
+.failed:
+    mov rdi, str_error_unsupported_inst_form
+    call runtime_print_string
+    call runtime_print_newline
+
+    mov rdi, 2
+    call runtime_exit
+
+.break:
     leave
     ret
 
 ;;; rdi: asm*
 ;;; rsi: template*
 ;;; rdx: args-num
-;;; rcx: args[1]
-;;; r8:  args[2]
+;;; rcx: args**
 gen:
     push rbp
     mov rbp, rsp
-    sub rsp, 88
+    sub rsp, 136
+
+    lea rax, [rbp-136]          ; inst: sizeof(32), [136, 104)
+    mov qword [rbp-104], rax    ; inst*
+    mov qword [rbp-96], 0       ; pattern*, head
 
     mov qword [rbp-88], 0       ; pattern*, head
     mov qword [rbp-80], 0       ; expected
@@ -3941,8 +4318,10 @@ gen:
     mov qword [rbp-64], 0       ; pattern[0] = pattern(args[1])
     mov qword [rbp-56], 0       ; pattern[1] = pattern(args[2])
 
-    mov [rbp-48], r8            ; args[2]
-    mov [rbp-40], rcx           ; args[1]
+    mov rax, [rcx+8]
+    mov [rbp-48], rax           ; args[2]
+    mov rax, [rcx]
+    mov [rbp-40], rax           ; args[1]
     mov [rbp-32], rdx           ; args-num
     mov [rbp-16], rsi           ; template*
     mov [rbp-8], rdi            ; asm*
@@ -3973,10 +4352,12 @@ gen:
     mov qword [rbp-88], rax     ; pattern*, head
 
 .matching_loop:
+    ;; debug
     mov rdi, qword [rbp-32]
     add rdi, 100
     call runtime_print_uint64
     call runtime_print_newline
+    ;;
 
     cmp qword [rbp-32], 0       ; args-num
     je .matched
@@ -4000,6 +4381,12 @@ gen:
     cmp rax, 0
     je .not_matched
 
+    ;; update-pattern
+    mov rax, [rbp-80]           ; pattern-template
+    mov rcx, [rbp-88]           ; pattern[n]
+    mov [rcx], rax
+
+    ;; step
     add qword [rbp-88], 8       ; pattern++ (sizeof(8))
     add qword [rbp-16], 4       ; step template
     dec qword [rbp-32]          ; args-num
@@ -4007,25 +4394,48 @@ gen:
     jmp .matching_loop
 
 .matched:
+    ;;
     mov rdi, .a
     call runtime_print_string
     call runtime_print_newline
+    ;;
+
+    lea rdi, [rbp-56]           ; pattern[0]*
+    call inst_pattern_print
+
+    mov rdi, [rbp-40]           ; args[1]
+    lea rsi, [rbp-64]           ; pattern[0]*
+    call inst_pattern_updated_tnode
+    mov [rbp-40], rax
+
+    mov rdi, [rbp-48]           ; args[2]
+    lea rsi, [rbp-56]           ; pattern[1]*
+    call inst_pattern_updated_tnode
+    mov [rbp-48], rax
+
+    mov rdi, [rbp-104]          ; inst*
+    call inst_init
 
     mov rdi, [rbp-8]            ; asm*
-    mov rsi, 0
+    mov rsi, [rbp-104]          ; inst*
     mov rdx, [rbp-16]           ; template*
     mov rcx, [rbp-40]           ; args[1]
-    mov r8, [rbp-48]            ; args[1]
-    call inst_pattern_to_inst
+    mov r8, [rbp-48]            ; args[2]
+    call inst_pattern_to_inst_2
 
-    jmp .break
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-104]          ; inst*
+    call asm_update_inst_if_efficient
+
+    mov rax, 1
+    leave
+    ret
 
 .a:
     db "matched", 0
 
 .not_matched:
-
-
+    xor rax, rax
     leave
     ret
 
@@ -5089,6 +5499,49 @@ inst_current_size:
 
     ret
 
+;;; rdi: asm*
+asm_inst_current_size:
+    lea rdi, [rdi+56]           ; asm.inst*
+    call inst_current_size
+    ret
+
+;;; rdi: inst*
+;;; rsi: sexp*
+inst_set_prefix_if:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 8
+
+    mov [rbp-8], rdi            ; inst*
+
+    mov rdi, rsi                ; value
+    call tnode_type_size
+    cmp rax, 2
+    jne .skip
+
+    mov rdi, [rbp-8]            ; inst*
+    mov byte [rdi+24], 1        ; inst.l-prefix-size
+
+    mov byte [rdi+0], 0x66      ; inst.l-prefix-size
+
+.skip:
+    leave
+    ret
+
+;;; rdi: inst*
+;;; rsi: asm*
+inst_write_prefix:
+    xor rax, rax
+    mov al, [rdi]               ; inst.rex-prefix
+    cmp rax, 0
+    je .break
+
+    mov rdi, rsi                ; asm*
+    mov rsi, rax
+    call asm_write_u8
+
+.break:
+    ret
 
 ;;; rdi: inst*
 inst_set_rex:
@@ -5116,6 +5569,14 @@ inst_set_rex_w:
     mov byte [rdi+25], 1        ; inst.rex-prefix-size
                                 ;                   0b    W000
     or byte [rdi+1], 0x48       ; inst.rex-prefix = 0b01001000
+    ret
+
+;;; rdi: inst*
+;;; rsi: rex
+inst_set_rex_value:
+    mov byte [rdi+25], 1        ; inst.rex-prefix-size
+    mov rax, rsi
+    or byte [rdi+1], al         ; inst.rex-prefix
     ret
 
 ;;; rdi: inst*
@@ -5259,7 +5720,7 @@ inst_set_value:
     call runtime_print_uint64
     call runtime_print_newline
 
-    mov rdi, 50
+    mov rdi, 53
     call runtime_exit
 
 .u8:
@@ -5320,7 +5781,7 @@ inst_write_value:
     call runtime_print_uint64
     call runtime_print_newline
 
-    mov rdi, 50
+    mov rdi, 54
     call runtime_exit
 
 .u8:
@@ -5529,6 +5990,36 @@ asm_inst_set_imm:
     call inst_set_imm
     ret
 
+;;; rdi: inst*
+;;; rsi: sexp*(tnode)
+;;; rdx: u64, size
+inst_set_imm_sign_ext:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 24
+
+    mov [rbp-24], rdx           ; byte-size
+    mov [rbp-16], rsi           ; sexp*(node)
+    mov [rbp-8], rdi            ; inst*
+
+    cmp qword [rbp-24], 8       ; size
+    jne .skip_adjust
+
+    mov rdi, [rbp-8]            ; inst*
+    call inst_set_rex_w
+
+    ;; TODO: warning
+    mov qword [rbp-24], 4       ; size from imm64 to imm32
+
+.skip_adjust:
+    mov rdx, [rbp-24]           ; byte-size
+    mov rsi, [rbp-16]           ; sexp*(node)
+    mov rdi, [rbp-8]            ; inst*
+    call inst_set_imm
+
+    leave
+    ret
+
 ;;; rdi: asm*
 ;;; rsi: sexp*(tnode)
 ;;; rdx: u64, size
@@ -5713,6 +6204,10 @@ inst_write:
     mov qword [rbp-24], 0       ; counter
     mov [rbp-16], rdi           ; inst*
     mov [rbp-8], rsi            ; asm*
+
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, [rbp-8]            ; asm*
+    call inst_write_prefix
 
     mov rdi, [rbp-16]           ; inst*
     mov rsi, [rbp-8]            ; asm*
@@ -8478,6 +8973,7 @@ str_ice_invalid_expr:       db "ICE: Invalid op", 0
 str_ice_unsupported_size:   db "ICE: Unsupported size", 0
 str_ice_nomore_sexps:       db "ICE: Cannot allocate sexp nodes", 0
 
+str_error_unsupported_inst_form:    db "ERROR: Unsupported inst form", 0
 str_error_unsupported_op_arg1:  db "ERROR: ", 0
 str_error_unsupported_oprands_size: db "ERROR: Unsupported operands size", 0
 
@@ -8621,6 +9117,44 @@ g_asm_inst_table:
 
     dq 0                        ; termination
 
+g_asm_inst_add_al_imm8:
+    dd 2
+    db 0x01, 0x01, 0x00, 0x00   ; al
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db 0x00                     ; REX
+    db 0x01                     ; op-length
+    db 0x04                     ;
+    db 0x02                     ; i
+
+g_asm_inst_add_ax_imm16:
+    dd 2
+    db 0x01, 0x02, 0x00, 0x00   ; ax
+    db 0x04, 0x02, 0xff, 0x00   ; imm16
+    db 0x00                     ; REX
+    db 0x01                     ; op-length
+    db 0x05                     ;
+    db 0x02                     ; i
+
+g_asm_inst_add_rm16_imm8:
+    dd 2
+    db 0x05, 0x02, 0xff, 0x00   ; r/m16
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db 0x00                     ; REX
+    db 0x01                     ; op-length
+    db 0x83                     ;
+    db 0x03                     ; r/m(/r), imm
+    db 0                        ; /r
+
+g_asm_inst_add_rm64_imm8:
+    dd 2
+    db 0x05, 0x08, 0xff, 0x00   ; r/m64
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db 0x00                     ; REX
+    db 0x01                     ; op-length
+    db 0x83                     ;
+    db 0x03                     ; r/m(/r), imm
+    db 0                        ; /r
+
 g_asm_inst_add_rm64_r64:
     dd 2
     db 0x05, 0x08, 0xff, 0x00   ; r/m64
@@ -8639,9 +9173,24 @@ g_asm_inst_add_r32_rm32:
     db 0x03                     ;
     db 0x00                     ; r, r/m
 
-g_asm_inst_add:
-    ;;    R,    S,    A,    N,    S,    ?,  REX, size,                op-code,has/r,   /r, imm
-    db 0x01, 0x01, 0x00, 0x04, 0x01, 0xff, 0x01, 0x01, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+g_asm_inst_add_r64_rm64:
+    dd 2
+    db 0x01, 0x08, 0xff, 0x00   ; reg64
+    db 0x05, 0x08, 0xff, 0x00   ; r/m64
+    db 0x48                     ; REX.W
+    db 0x01                     ; op-length
+    db 0x03                     ;
+    db 0x00                     ; r, r/m
+
+g_asm_inst_template_add:
+    dq g_asm_inst_add_al_imm8   ; I
+    dq g_asm_inst_add_ax_imm16
+    dq g_asm_inst_add_rm16_imm8 ; MI
+    dq g_asm_inst_add_rm64_imm8
+    dq g_asm_inst_add_rm64_r64  ; MR
+    dq g_asm_inst_add_r32_rm32  ; RM
+    dq g_asm_inst_add_r64_rm64
+    dq 0
 
 section_rodata_end:
     ;; --< rodata
