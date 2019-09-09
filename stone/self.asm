@@ -2161,19 +2161,26 @@ tnode_value:
 tnode_calc_imm_size:
     push rbp
     mov rbp, rsp
-    sub rsp, 8
+    sub rsp, 24
 
-    mov [rbp-8], rdi
+    mov qword [rbp-16], 0       ; size
+    mov [rbp-8], rdi            ; value
 
+    mov rdi, [rbp-8]            ; value
+    call tnode_type_size
+    cmp rax, 0
+    jne .break
+
+    mov [rbp-16], rax           ; size
+
+    ;; inspect size if value is number
     mov rdi, [rbp-8]
     call tnode_type_tag
-
     cmp rax, 4                  ; integer
     je .calc
 
-    ;; normal-type
-    mov rdi, [rbp-8]
-    call tnode_type_size
+    ;; fallback
+    mov rax, [rbp-16]           ; size
     jmp .break
 
 .calc:
@@ -3002,6 +3009,10 @@ asm_infer_size_r_i:
 ;;; rdi: asm*
 ;;; rsi: args
 asm_write_inst_mov:
+    mov rdx, g_asm_inst_template_mov
+    call asm_write_inst_from_template
+    ret
+
     push rbp
     mov rbp, rsp
     sub rsp, 80
@@ -3700,12 +3711,32 @@ inst_pattern_is_matched:
     call inst_pattern_get_size
     mov [rbp-22], al            ; actual-size
 
+    cmp byte [rbp-23], 1        ; expected = register
+    je .size_check_32bits_included
+
     cmp byte [rbp-23], 4        ; expected = imm
     je .size_check_included
 
     mov al, [rbp-21]            ; expected
     cmp al, [rbp-22]            ; expected == actual
     je .size_matched
+
+    jmp .not_matched
+
+.size_check_32bits_included:
+    mov al, [rbp-21]            ; expected
+    cmp al, [rbp-22]            ; expected == actual
+    je .size_matched
+
+    mov al, [rbp-21]            ; expected
+    cmp al, 4                   ; expected == 4
+    je .size_check_32bits_included_allow_64bits
+    jmp .not_matched
+
+.size_check_32bits_included_allow_64bits:
+    mov al, [rbp-22]            ; actual
+    cmp al, 8                   ; actual == 8
+    je .matched
 
     jmp .not_matched
 
@@ -3873,30 +3904,37 @@ asm_infer_size_r_x:
     ;;
     mov rax, [rbp-32]           ; size
 
-    cmp ax, 0x0808              ; 8, 8 -> 8
-    je .rhs_bits64
-
+    ;; 8
     cmp ax, 0x0800              ; 8, 0 -> 8
     je .rhs_bits64
-
+    cmp ax, 0x0808              ; 8, 8 -> 8
+    je .rhs_bits64
     cmp ax, 0x0804              ; 8, 4 -> 8 | rhs = 4, 4
     je .rhs_bits64_or_lhs_and_rhs_bits32
-
     cmp ax, 0x0802              ; 8, 2 -> 2
     je .rhs_bits16
-
     cmp ax, 0x0801              ; 8, 1 -> 1
     je .rhs_bits8
 
+    ;; 4
+    cmp ax, 0x0400              ; 4, 0 -> 0
+    je .rhs_bits32
     cmp ax, 0x0404              ; 4, 4 -> 4
     je .rhs_bits32
-
     cmp ax, 0x0402              ; 4, 2 -> 2
     je .rhs_bits16
+    cmp ax, 0x0401              ; 4, 1 -> 1
+    je .rhs_bits16
 
+    ;; 2
+    cmp ax, 0x0200              ; 2, 0 -> 0
+    je .rhs_bits8
     cmp ax, 0x0201              ; 2, 1 -> 1
     je .rhs_bits8
 
+    ;; 1
+    cmp ax, 0x0100              ; 1, 0 -> 0
+    je .rhs_bits8
     cmp ax, 0x0101              ; 1, 1 -> 1
     je .rhs_bits8
 
@@ -4174,17 +4212,20 @@ inst_pattern_to_inst_2:
     mov al, [rax]               ; byte[n], op-length
     inc qword [rbp-32]          ; step-iter, n
 
-    cmp al, 0                   ; r, r/m
+    cmp al, const_asm_inst_type_rm ; r, r/m
     je .operand_rm
 
-    cmp al, 1                   ; r/m, r
+    cmp al, const_asm_inst_type_mr ; r/m, r
     je .operand_mr
 
-    cmp al, 2                   ; imm
+    cmp al, const_asm_inst_type_i ; imm
     je .operand_i
 
-    cmp al, 3                   ; r/m, imm
+    cmp al, const_asm_inst_type_mi ; r/m, imm
     je .operand_mi
+
+    cmp al, const_asm_inst_type_oi ; r, imm
+    je .operand_oi
 
     jmp .not_supported
 
@@ -4249,6 +4290,27 @@ inst_pattern_to_inst_2:
 
     jmp .break
 
+    ;; r, imm
+.operand_oi:
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, [rbp-40]           ; args[1]
+    call inst_set_prefix_if
+
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, [rbp-40]           ; args[1]
+    call inst_add_reg_to_opcode
+
+    mov rdi, [rbp-48]           ; args[2]
+    call tnode_type_size
+
+    ;; imm
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, [rbp-48]           ; arg[2]
+    mov rdx, rax
+    call inst_set_imm
+
+    jmp .break
+
 .not_supported:
     mov rdi, 42
     call runtime_exit
@@ -4257,16 +4319,23 @@ inst_pattern_to_inst_2:
     leave
     ret
 
-
 ;;; rdi: asm*
 ;;; rsi: args
 asm_write_inst_add:
+    mov rdx, g_asm_inst_template_add
+    call asm_write_inst_from_template
+    ret
+
+;;; rdi: asm*
+;;; rsi: args
+;;; rdx: template**
+asm_write_inst_from_template:
     push rbp
     mov rbp, rsp
     sub rsp, 88
 
-    mov qword [rbp-56], 0                       ; matched
-    mov qword [rbp-48], g_asm_inst_template_add ; template**
+    mov qword [rbp-56], 0       ; matched
+    mov qword [rbp-48], rdx     ; template**
 
     mov qword [rbp-32], 0       ; args[1], sexp*(tnode)
     mov qword [rbp-24], 0       ; args[2], sexp*(tnode)
@@ -7644,7 +7713,7 @@ asm_find_labels:
     mov rdi, rax                ; accumurated inst-index
     call sexp_alloc_int
     mov rdi, rax
-    mov rsi, 0                  ; not-shrinkable
+    mov rsi, 8                  ; not-shrinkable
     call tnode_alloc_uint_node
 
     jmp .break
@@ -9145,6 +9214,103 @@ g_asm_inst_table:
 
     dq 0                        ; termination
 
+;;; OPCODE-patterns
+const_asm_inst_type_rm: equ 0
+const_asm_inst_type_mr: equ 1
+const_asm_inst_type_i:  equ 2
+const_asm_inst_type_mi: equ 3
+const_asm_inst_type_oi: equ 4
+
+;;;
+;;; MOV
+;;;
+g_asm_inst_template_mov:
+    dq g_asm_inst_mov_rm8_r8
+    dq g_asm_inst_mov_rm64_r64
+    dq g_asm_inst_mov_r8_rm8
+    dq g_asm_inst_mov_r32_rm32
+    dq g_asm_inst_mov_r32_imm32
+    dq g_asm_inst_mov_r64_imm64
+    dq g_asm_inst_mov_rm64_imm32
+    dq 0
+
+g_asm_inst_mov_rm8_r8:
+    dd 2
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db 0x01, 0x01, 0xff, 0x00   ; r8
+    db 0x40                     ; REX
+    db 0x01                     ; op-length
+    db 0x88
+    db const_asm_inst_type_mr
+
+g_asm_inst_mov_rm64_r64:
+    dd 2
+    db 0x05, 0x08, 0xff, 0x00   ; r/m64
+    db 0x01, 0x08, 0xff, 0x00   ; r64
+    db 0x00                     ; REX
+    db 0x01                     ; op-length
+    db 0x89
+    db const_asm_inst_type_mr
+
+g_asm_inst_mov_r8_rm8:
+    dd 2
+    db 0x01, 0x01, 0xff, 0x00   ; r8
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db 0x40                     ; REX
+    db 0x01                     ; op-length
+    db 0x8a
+    db const_asm_inst_type_rm
+
+g_asm_inst_mov_r32_rm32:
+    dd 2
+    db 0x01, 0x04, 0xff, 0x00   ; r32
+    db 0x05, 0x04, 0xff, 0x00   ; r/m32
+    db 0x00                     ; REX
+    db 0x01                     ; op-length
+    db 0x8b
+    db const_asm_inst_type_rm
+
+g_asm_inst_mov_r32_imm32:
+    dd 2
+    db 0x01, 0x04, 0xff, 0x00   ; r32
+    db 0x04, 0x04, 0xff, 0x00   ; imm32
+    db 0x00                     ; REX
+    db 0x01                     ; op-length
+    db 0xb8                     ;
+    db const_asm_inst_type_oi
+
+g_asm_inst_mov_r64_imm64:
+    dd 2
+    db 0x01, 0x08, 0xff, 0x00   ; r64
+    db 0x04, 0x08, 0xff, 0x00   ; imm64
+    db 0x00                     ; REX
+    db 0x01                     ; op-length
+    db 0xb8                     ;
+    db const_asm_inst_type_oi
+
+g_asm_inst_mov_rm64_imm32:
+    dd 2
+    db 0x05, 0x08, 0xff, 0x00   ; r/m64
+    db 0x04, 0x04, 0xff, 0x00   ; imm632
+    db 0x00                     ; REX
+    db 0x01                     ; op-length
+    db 0xc7                     ;
+    db const_asm_inst_type_mi, 0
+
+;;;
+;;; ADD
+;;;
+g_asm_inst_template_add:
+    dq g_asm_inst_add_al_imm8   ; I
+    dq g_asm_inst_add_ax_imm16
+    dq g_asm_inst_add_rm16_imm8 ; MI
+    dq g_asm_inst_add_rm32_imm8
+    dq g_asm_inst_add_rm64_imm8
+    dq g_asm_inst_add_rm64_r64  ; MR
+    dq g_asm_inst_add_r32_rm32  ; RM
+    dq g_asm_inst_add_r64_rm64
+    dq 0
+
 g_asm_inst_add_al_imm8:
     dd 2
     db 0x01, 0x01, 0x00, 0x00   ; al
@@ -9170,8 +9336,7 @@ g_asm_inst_add_rm16_imm8:
     db 0x00                     ; REX
     db 0x01                     ; op-length
     db 0x83                     ;
-    db 0x03                     ; r/m(/r), imm
-    db 0                        ; /r
+    db const_asm_inst_type_mi, 0 ; /r = 0
 
 g_asm_inst_add_rm32_imm8:
     dd 2
@@ -9180,8 +9345,7 @@ g_asm_inst_add_rm32_imm8:
     db 0x00                     ; REX
     db 0x01                     ; op-length
     db 0x83                     ;
-    db 0x03                     ; r/m(/r), imm
-    db 0                        ; /r
+    db const_asm_inst_type_mi, 0 ; /r = 0
 
 g_asm_inst_add_rm64_imm8:
     dd 2
@@ -9190,8 +9354,7 @@ g_asm_inst_add_rm64_imm8:
     db 0x00                     ; REX
     db 0x01                     ; op-length
     db 0x83                     ;
-    db 0x03                     ; r/m(/r), imm
-    db 0                        ; /r
+    db const_asm_inst_type_mi, 0 ; /r = 0
 
 g_asm_inst_add_rm64_r64:
     dd 2
@@ -9220,16 +9383,7 @@ g_asm_inst_add_r64_rm64:
     db 0x03                     ;
     db 0x00                     ; r, r/m
 
-g_asm_inst_template_add:
-    dq g_asm_inst_add_al_imm8   ; I
-    dq g_asm_inst_add_ax_imm16
-    dq g_asm_inst_add_rm16_imm8 ; MI
-    dq g_asm_inst_add_rm32_imm8
-    dq g_asm_inst_add_rm64_imm8
-    dq g_asm_inst_add_rm64_r64  ; MR
-    dq g_asm_inst_add_r32_rm32  ; RM
-    dq g_asm_inst_add_r64_rm64
-    dq 0
+
 
 section_rodata_end:
     ;; --< rodata
