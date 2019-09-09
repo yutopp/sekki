@@ -3808,12 +3808,33 @@ asm_infer_size_x_x:
 
 .lhs_addressing:
     mov rdi, [rbp-8]            ; lhs
-    mov rdx, [rbp-24]           ; rhs
+    call sexp_print
+    call runtime_print_newline
+
+    mov rdi, [rbp-8]            ; lhs
+    call tnode_type_tag         ;
+    mov rdi, rax
+    call runtime_print_uint64
+    call runtime_print_newline
+
+    ;; set-lhs-type
+    mov rdi, [rbp-8]            ; lhs
+    call tnode_type_tag         ;
+    mov rdi, [rbp-40]           ; pattern*
+    mov rsi, rax                ; type
+    call inst_pattern_set_type
+
+;    ;; set-lhs-size
+    mov rdi, [rbp-8]            ; lhs
+    call tnode_type_size
+    mov rdi, [rbp-40]           ; pattern*
+    mov rsi, rax                ; size
+    call inst_pattern_set_size
+
+    mov rdi, [rbp-8]            ; lhs
+    mov rsi, [rbp-24]           ; rhs
     mov rdx, [rbp-40]           ; pattern*
     call asm_infer_size_m_x
-
-    mov rdi, 52
-    call runtime_exit
 
     jmp .break
 
@@ -3965,9 +3986,9 @@ asm_infer_size_m_x:
 
     mov rdi, [rbp-8]            ; lhs
     call tnode_type_size
-    and rax, 0x00ff             ; 0x00RR
-    shl rax, 8                  ; 1 * 8, 0xRR00
-    or [rbp-32], rax            ; size, 0xRRLL
+    and rax, 0x00ff             ; 0x00LL
+    shl rax, 8                  ; 1 * 8, 0xLL00
+    or [rbp-32], rax            ; size, 0xLLRR
 
     cmp qword [rbp-32], 0
     je .size_undecidable
@@ -3983,24 +4004,21 @@ asm_infer_size_m_x:
     cmp rax, 0
     jne .skip_lhs_updation
 
-    ;; set-lhs-size
-    mov rdi, [rbp-8]            ; lhs
-    call tnode_type_size
+.update_lhs_size:
+    ;; set-lhs-size, same as rhs
     mov rdi, [rbp-40]           ; pattern*
-    mov rsi, 4                  ; size
+    mov rsi, [rbp-32]           ; size
     call inst_pattern_set_size
 
+    mov rax, [rbp-32]           ; rhs-size
+
 .skip_lhs_updation:
-    mov rdi, [rbp-8]            ; lhs
-    call tnode_type_size
-    and rax, 0x00ff             ; 0x00RR
-    shl rax, 8                  ; 1 * 8, 0xRR00
-    or [rbp-32], rax            ; size, 0xRRLL
+    and rax, 0x00ff             ; 0x00LL
+    shl rax, 8                  ; 1 * 8, 0xLL00
+    or [rbp-32], rax            ; size, 0xLLRR
 
     ;;
     mov rax, [rbp-32]           ; size
-
-
 
     cmp ax, 0x0808              ; 8, 8 -> 8
     je .rhs_bits64
@@ -4022,6 +4040,9 @@ asm_infer_size_m_x:
 
     cmp ax, 0x0402              ; 4, 2 -> 2
     je .rhs_bits16
+
+    cmp ax, 0x0401              ; 4, 1 -> 1
+    je .rhs_bits8
 
     cmp ax, 0x0201              ; 2, 1 -> 1
     je .rhs_bits8
@@ -4276,7 +4297,8 @@ asm_write_inst_add:
     mov rdi, [rbp-8]            ; asm*
     mov rsi, rax                ; template*
     mov rdx, 2                  ; args-num
-    lea rcx, [rbp-32]           ; args**
+    mov rcx, [rbp-32]           ; args[1]
+    mov r8, [rbp-24]            ; args[2]
     call gen
     or [rbp-56], rax
 
@@ -4302,7 +4324,8 @@ asm_write_inst_add:
 ;;; rdi: asm*
 ;;; rsi: template*
 ;;; rdx: args-num
-;;; rcx: args**
+;;; rcx: args[1]
+;;; r8:  args[2]
 gen:
     push rbp
     mov rbp, rsp
@@ -4318,10 +4341,8 @@ gen:
     mov qword [rbp-64], 0       ; pattern[0] = pattern(args[1])
     mov qword [rbp-56], 0       ; pattern[1] = pattern(args[2])
 
-    mov rax, [rcx+8]
-    mov [rbp-48], rax           ; args[2]
-    mov rax, [rcx]
-    mov [rbp-40], rax           ; args[1]
+    mov [rbp-48], r8            ; args[2]
+    mov [rbp-40], rcx           ; args[1]
     mov [rbp-32], rdx           ; args-num
     mov [rbp-16], rsi           ; template*
     mov [rbp-8], rdi            ; asm*
@@ -4335,6 +4356,13 @@ gen:
     jne .not_matched
 
     ;; patterns
+    mov rdi, [rbp-40]           ; args[1], sexp*(tnode)
+    call sexp_print
+    call runtime_print_newline
+
+    mov rdi, [rbp-48]           ; args[1], sexp*(tnode)
+    call sexp_print
+    call runtime_print_newline
 
     mov rdi, [rbp-40]           ; args[1], sexp*(tnode)
     mov rsi, [rbp-48]           ; args[2], sexp*(tnode)
@@ -9145,6 +9173,16 @@ g_asm_inst_add_rm16_imm8:
     db 0x03                     ; r/m(/r), imm
     db 0                        ; /r
 
+g_asm_inst_add_rm32_imm8:
+    dd 2
+    db 0x05, 0x04, 0xff, 0x00   ; r/m32
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db 0x00                     ; REX
+    db 0x01                     ; op-length
+    db 0x83                     ;
+    db 0x03                     ; r/m(/r), imm
+    db 0                        ; /r
+
 g_asm_inst_add_rm64_imm8:
     dd 2
     db 0x05, 0x08, 0xff, 0x00   ; r/m64
@@ -9186,6 +9224,7 @@ g_asm_inst_template_add:
     dq g_asm_inst_add_al_imm8   ; I
     dq g_asm_inst_add_ax_imm16
     dq g_asm_inst_add_rm16_imm8 ; MI
+    dq g_asm_inst_add_rm32_imm8
     dq g_asm_inst_add_rm64_imm8
     dq g_asm_inst_add_rm64_r64  ; MR
     dq g_asm_inst_add_r32_rm32  ; RM
