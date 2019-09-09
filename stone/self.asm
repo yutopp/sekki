@@ -3648,10 +3648,13 @@ inst_pattern_read:
 
 ;;; rdi: pattern*
 ;;; rsi: pattern*
+;;; rdx: template-metadata
 inst_pattern_is_matched:
     push rbp
     mov rbp, rsp
     sub rsp, 40
+
+    mov [rbp-40], rdx           ; template-metadata
 
     mov byte [rbp-24], 0        ; actual-type
     mov byte [rbp-23], 0        ; expected-type
@@ -3715,9 +3718,13 @@ inst_pattern_is_matched:
     call inst_pattern_get_size
     mov [rbp-22], al            ; actual-size
 
+    cmp qword [rbp-40], 0       ; template-metadata
+    je .skip_optimizable_size_check
+
     cmp byte [rbp-23], 1        ; expected = register
     je .size_check_32bits_included
 
+.skip_optimizable_size_check:
     cmp byte [rbp-23], 4        ; expected = imm
     je .size_check_included
 
@@ -3735,6 +3742,7 @@ inst_pattern_is_matched:
     mov al, [rbp-21]            ; expected
     cmp al, 4                   ; expected == 4
     je .size_check_32bits_included_allow_64bits
+
     jmp .not_matched
 
 .size_check_32bits_included_allow_64bits:
@@ -3815,21 +3823,21 @@ asm_infer_size_x_x:
     ;; set-lhs-type
     mov rdi, [rbp-8]            ; lhs
     call tnode_type_tag
-    mov rdi, [rbp-40]           ; pattern*
+    mov rdi, [rbp-40]           ; pattern**
     mov rsi, rax                ; type
     call inst_pattern_set_type
 
     ;; set-lhs-size
     mov rdi, [rbp-8]            ; lhs
     call tnode_type_size
-    mov rdi, [rbp-40]           ; pattern*
+    mov rdi, [rbp-40]           ; pattern**
     mov rsi, rax                ; size
     call inst_pattern_set_size
 
     ;; set-lhs-register-index
     mov rdi, [rbp-8]            ; lhs
     call tnode_reg_index
-    mov rdi, [rbp-40]           ; pattern*
+    mov rdi, [rbp-40]           ; pattern**
     mov rsi, rax                ; reg-index
     call inst_pattern_set_value
 
@@ -3886,7 +3894,7 @@ asm_infer_size_r_x:
     mov rbp, rsp
     sub rsp, 40
 
-    mov qword [rbp-40], rdx     ; pattern*
+    mov [rbp-40], rdx           ; pattern*
 
     mov qword [rbp-32], 0       ; size or rhs-size
 
@@ -3914,7 +3922,8 @@ asm_infer_size_r_x:
     cmp ax, 0x0808              ; 8, 8 -> 8
     je .rhs_bits64
     cmp ax, 0x0804              ; 8, 4 -> 8 | rhs = 4, 4
-    je .rhs_bits64_or_lhs_and_rhs_bits32
+;   je .rhs_bits64_or_lhs_and_rhs_bits32
+    je .rhs_bits64
     cmp ax, 0x0802              ; 8, 2 -> 2
     je .rhs_bits16
     cmp ax, 0x0801              ; 8, 1 -> 1
@@ -3949,6 +3958,7 @@ asm_infer_size_r_x:
     jmp .update_rhs
 
 .rhs_bits64_or_lhs_and_rhs_bits32:
+    mov rdi, [rbp-8]            ; lhs
     call tnode_reg_extended
     cmp rax, 0
     jne .rhs_bits64
@@ -4344,6 +4354,7 @@ asm_write_inst_from_template:
     mov qword [rbp-80], 0       ; args[1], sexp*(tnode)
     mov qword [rbp-72], 0       ; args[2], sexp*(tnode)
 
+    mov qword [rbp-48], 0       ; template-metadata
     mov qword [rbp-40], 0       ; args-num
     mov qword [rbp-32], 0       ; matched
     mov [rbp-24], rdx           ; template**
@@ -4354,7 +4365,7 @@ asm_write_inst_from_template:
 
 .take_args_loop:
     cmp qword [rbp-16], 0
-    je .gen_loop                 ; all args are read
+    je .generate_inst           ; all args are read
 
     ;; args[1]
     mov rdi, [rbp-8]            ; asm*
@@ -4374,16 +4385,25 @@ asm_write_inst_from_template:
 
     jmp .take_args_loop
 
+.generate_inst:
+    ;; read template metadata
+    mov rax, [rbp-24]           ; template**
+    mov rax, [rax]              ; template[0, 8), template-metadata
+    add qword [rbp-24], 8       ; template* += sizeof(template), 8
+
+    mov [rbp-48], rax           ; template-metadata
+
 .gen_loop:
     mov rax, [rbp-24]           ; template**
     mov rax, [rax]              ; template*
-    cmp rax, 0
+    cmp rax, 0                  ; null-terminated
     je .finish
 
     mov rdi, [rbp-8]            ; asm*
     mov rsi, rax                ; template*
     mov rdx, [rbp-40]           ; args-num
     lea rcx, [rbp-80]           ; args*, sexp**
+    mov r8, [rbp-48]            ; template-metadata
     call gen
     or [rbp-32], rax            ; matched |= result
 
@@ -4410,6 +4430,7 @@ asm_write_inst_from_template:
 ;;; rsi: template*
 ;;; rdx: args-num
 ;;; rcx: args, sexp**
+;;; r8: template-metadata
 gen:
     push rbp
     mov rbp, rsp
@@ -4425,6 +4446,7 @@ gen:
     mov qword [rbp-64], 0       ; pattern[0] = pattern(args[1])
     mov qword [rbp-56], 0       ; pattern[1] = pattern(args[2])
 
+    mov [rbp-48], r8            ; template-metadata
     mov [rbp-40], rcx           ; args*, sexp**
     mov [rbp-32], rdx           ; args-num
     mov [rbp-16], rsi           ; template*
@@ -4439,6 +4461,7 @@ gen:
     jne .not_matched
 
     ;; patterns
+    ;; -> debug
     mov rax, [rbp-40]           ; args*
     mov rdi, [rax]              ; args[1], sexp*(tnode)
     call sexp_print
@@ -4448,6 +4471,11 @@ gen:
     mov rdi, [rax+8]            ; args[2], sexp*(tnode)
     call sexp_print
     call runtime_print_newline
+
+    lea rdi, [rbp-64]           ; (pattern[2])*
+    call inst_pattern_print
+
+    ;; <- debug
 
     mov rax, [rbp-40]           ; args*
     mov rdi, [rax]              ; args[1], sexp*(tnode)
@@ -4491,6 +4519,7 @@ gen:
 
     lea rdi, [rbp-80]           ; pattern*, expected
     mov rsi, [rbp-88]           ; pattern[n]
+    mov rdx, [rbp-48]           ; template-metadata
     call inst_pattern_is_matched
     cmp rax, 0
     je .not_matched
@@ -4512,10 +4541,10 @@ gen:
     mov rdi, .a
     call runtime_print_string
     call runtime_print_newline
-    ;;
 
     lea rdi, [rbp-56]           ; pattern[0]*
     call inst_pattern_print
+    ;;
 
     mov rax, [rbp-40]           ; args*
     mov rdi, [rax]              ; args[1]
@@ -4523,7 +4552,6 @@ gen:
     call inst_pattern_updated_tnode
     mov rcx, [rbp-40]           ; args*
     mov [rcx], rax
-
 
     mov rax, [rbp-40]           ; args*
     mov rdi, [rax+8]            ; args[2]
@@ -9252,6 +9280,7 @@ const_inst_rex_b:   equ 0x41    ; REX.B
 ;;; MOV
 ;;;
 g_asm_inst_template_mov:
+    dq 1                        ; optimizable
     dq g_asm_inst_mov_rm8_r8
     dq g_asm_inst_mov_rm64_r64
     dq g_asm_inst_mov_r8_rm8
@@ -9329,6 +9358,7 @@ g_asm_inst_mov_rm64_imm32:
 ;;; CMP
 ;;;
 g_asm_inst_template_cmp:
+    dq 0                        ; normal
     dq g_asm_inst_cmp_al_imm8
     dq g_asm_inst_cmp_ax_imm16
     dq g_asm_inst_cmp_eax_imm32
@@ -9446,6 +9476,7 @@ g_asm_inst_cmp_rm64_imm32:
 ;;; ADD
 ;;;
 g_asm_inst_template_add:
+    dq 0                        ; normal
     dq g_asm_inst_add_al_imm8   ; I
     dq g_asm_inst_add_ax_imm16
     dq g_asm_inst_add_rm16_imm8 ; MI
