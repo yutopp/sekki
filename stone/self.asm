@@ -3119,7 +3119,7 @@ asm_write_inst_cmp:
     ret
 
 
-;;; inst_pattern { type, size, value } = sizeof(8)
+;;; inst_pattern { type, size, value, aux } = sizeof(8)
 
 ;;; rdi: pattern*
 inst_pattern_print:
@@ -3156,6 +3156,14 @@ inst_pattern_print:
     ;; value
     mov rdi, [rbp-8]
     call inst_pattern_get_value
+    mov rdi, rax
+    call runtime_print_uint64
+    mov rdi, str_comma
+    call runtime_print_string
+
+    ;; aux
+    mov rdi, [rbp-8]
+    call inst_pattern_get_aux
     mov rdi, rax
     call runtime_print_uint64
 
@@ -3215,6 +3223,20 @@ inst_pattern_get_value:
     mov al, cl
     ret
 
+;;; rdi: pattern*
+;;; rsi:
+inst_pattern_set_aux:
+    mov rax, rsi                ; value
+    mov byte [rdi], al
+    ret
+
+;;; rdi: pattern*
+inst_pattern_get_aux:
+    mov cl, [rdi]
+    xor rax, rax
+    mov al, cl
+    ret
+
 ;;; rdi: sexp*(tnode)
 ;;; rsi: pattern*
 inst_pattern_updated_tnode:
@@ -3264,6 +3286,13 @@ inst_pattern_read:
     mov rdi, [rbp-16]           ; pattern*
     mov rsi, rax
     call inst_pattern_set_value
+
+    ;;
+    mov rax, [rbp-8]            ; byte*
+    mov al, byte [rax+3]
+    mov rdi, [rbp-16]           ; pattern*
+    mov rsi, rax
+    call inst_pattern_set_aux
 
     leave
     ret
@@ -3915,6 +3944,9 @@ inst_pattern_to_inst:
     cmp al, const_asm_inst_type_o ; r
     je .operand_o
 
+    cmp al, const_inst_enc_d_0 ; rel
+    je .operand_d_0
+
     jmp .not_supported
 
     ;; r, r/m
@@ -4024,6 +4056,20 @@ inst_pattern_to_inst:
     ;; imm
     mov rdi, [rbp-16]           ; inst*
     mov rsi, [rbp-48]           ; arg[2]
+    mov rdx, rax
+    call inst_set_imm
+
+    jmp .break
+
+    ;; d
+.operand_d_0:
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, [rbp-40]           ; args[1]
+    call inst_set_prefix_if
+
+    ;; imm
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, [rbp-40]           ; arg[1]
     mov rdx, rax
     call inst_set_imm
 
@@ -4408,7 +4454,7 @@ asm_param_compat:
     cmp rax, 4                  ; imm
     je .imm
 
-    cmp rax, 19                 ; rel
+    cmp rax, 0x0f               ; rel
     je .rel
 
     ;; ICE
@@ -4704,14 +4750,45 @@ asm_param_compat_to_rel:
 
     mov rdi, [rbp-24]           ; arg
     call tnode_type_tag
-    cmp rax, 1                  ; register
+    cmp rax, 4                  ; integer
     je .can_conv
 
     jmp .failed
 
 .can_conv:
+    mov rdi, [rbp-16]           ; expected-pattern*
+    call inst_pattern_get_aux
+
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-24]           ; arg, sexp*
+    mov rdx, rax
+    call asm_calc_rel_sample
+    mov rdi, rax
+    call sexp_print
+    call runtime_print_newline
+
+    mov rdi, [rbp-16]           ; expected-pattern*
+    call inst_pattern_get_aux
+
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-24]           ; arg, sexp*
+    mov rdx, rax
+    call asm_calc_rel_sample
+
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-16]           ; expected-pattern*
+    mov rdx, rax
+    call asm_param_compat_to_imm
+
+
+
+    leave
+    ret
+
     mov rax, [rbp-24]           ; arg, sexp*
     mov [rbp-88], rax           ; result, sexp*
+
+    call runtime_exit
 
     mov rax, [rbp-88]           ; result, sexp*
     jmp .break
@@ -5247,9 +5324,9 @@ asm_write_inst_jcc:
 ;;; rdi: asm*
 ;;; rsi: args
 asm_write_inst_jmp:
-;    mov rdx, g_asm_inst_template_jmp
-;    call asm_write_inst_from_template
-;    ret
+    mov rdx, g_asm_inst_template_jmp
+    call asm_write_inst_from_template
+    ret
 
     push rbp
     mov rbp, rsp
@@ -5882,13 +5959,15 @@ asm_step_args_with_eval:
 
 ;;; rdi: asm*
 ;;; rsi: sexp*(tnode)
+;;; rdx: expected-diff
 asm_calc_rel_sample:
     push rbp
     mov rbp, rsp
     sub rsp, 40
 
     mov qword [rbp-32], 0       ; offset
-    mov [rbp-24], rdx           ; byte-size
+
+    mov [rbp-24], rdx           ; expected-diff
     mov [rbp-16], rsi           ; (type . value): sexp*
     mov [rbp-8], rdi            ; asm*
 
@@ -5901,6 +5980,9 @@ asm_calc_rel_sample:
     mov rdi, [rbp-8]            ; asm*
     call asm_current_loc
     sub [rbp-32], rax           ; offset -= $
+
+    mov rax, [rbp-24]           ; expected-offset
+    sub [rbp-32], rax           ; offset -= expected-offset
 
     mov rdi, [rbp-32]
     call sexp_alloc_int
@@ -9662,6 +9744,7 @@ const_inst_enc_m_r: equ 1
 const_inst_enc_m_i: equ 3
 const_inst_enc_m_0: equ 5
 const_inst_enc_o_0: equ 6
+const_inst_enc_d_0: equ 8
 
 const_inst_rex:     equ 0x40    ; REX
 const_inst_rex_w:   equ 0x48    ; REX.W
@@ -10204,19 +10287,19 @@ g_asm_inst_template_jmp:
 
 .rel8:                          ; D
     dd 1
-    db 0x01, 0x01, 0xff, 0x01   ; r/m8
+    db 0x0f, 0x01, 0xff, 0x02   ; rel8, op(1)
     db 0x00
     db 0x01                     ; op-length
-    db 0xfe
-    db const_inst_enc_m_0, 0    ; /r
+    db 0xeb
+    db const_inst_enc_d_0
 
 .rel32:                         ; D
     dd 1
-    db 0x05, 0x04, 0xff, 0x01   ; r/m32
+    db 0x0f, 0x04, 0xff, 0x05   ; rel32, op(1)
     db 0x00
     db 0x01                     ; op-length
-    db 0xff
-    db const_inst_enc_m_0, 0    ; /r
+    db 0xe9
+    db const_inst_enc_d_0
 
 section_rodata_end:
     ;; --< rodata
