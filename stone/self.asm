@@ -4,8 +4,9 @@
 segment_align:  equ 0x1000
 
 app_max_code_buffer_size:   equ 0x10000
-app_max_asm_buffer_size:    equ 0x80000
+app_max_asm_buffer_size:    equ 0xf00000
 app_max_sexp_objects_count: equ 0x80000
+app_max_sexp_objects_size:  equ 0xc00000 ; 24 *
 app_max_heap:   equ 0x8000
 
 ;;; ELF Header
@@ -168,8 +169,6 @@ _start:
     mov rdi, [rbp-8]
     call asm_process_statements
 
-    call print_asm_to_stderr
-
     mov rdi, 0
     call runtime_exit
 
@@ -192,13 +191,6 @@ print_loaded_code_to_stdout:
     syscall
     ret
 
-print_asm_to_stderr:
-    mov rax, 1                  ; 1 - write
-    mov rdi, 2                  ; fd 2 - stderr
-    mov rsi, g_asm_buffer
-    mov rdx, [g_asm_buffer_size]
-    syscall
-    ret
 
 ;;; rdi: parser*
 parse_code:
@@ -2322,6 +2314,9 @@ asm_process_statements:
     ;;   ..pads..
     ;;   sexp* consts
     ;;   inst  inst
+    ;;   u64
+    ;;   char*
+    ;;   u64
     ;; }
     mov qword [rbp-160], 0       ; sexp*, nil, asm.labels           0
     mov qword [rbp-152], 0       ; sexp*, nil, asm.replacements     8
@@ -2333,10 +2328,31 @@ asm_process_statements:
     mov qword [rbp-112], 0       ; sexp*, nil, asm.consts           48
     mov qword [rbp-104], 0       ; inst(sizeof(32)), inst           56
     mov qword [rbp-72], 0        ; latest-inst-cost                 88
+    mov qword [rbp-64], 0        ; buffer*                          96
+    mov qword [rbp-56], 0        ; buffer-size                      104
 
+    mov qword [rbp-32], 0       ; fd
     lea rax, [rbp-160]
     mov [rbp-16], rax           ; asm*
     mov [rbp-8], rdi            ; statements*
+
+    mov rdi, str_dev_zero       ; filename
+    mov rsi, 0                  ; READ
+    call runtime_open
+    mov [rbp-32], rax           ; fd
+
+    mov rdi, 0x0                ; addr
+    mov rsi, app_max_asm_buffer_size ; length
+    mov rdx, 0x03               ; 0x0011 = WRITE | READ
+    mov rcx, 0x2                ; flags = MAP_PRIVATE
+    mov r8, [rbp-32]            ; fd
+    call runtime_mmap
+
+    cmp rax, -1
+    je .failed_to_allocate_buffer
+
+    mov rdi, [rbp-16]           ; asm*
+    mov [rdi+96], rax           ; asm.buffer
 
     mov rdi, [rbp-16]           ; asm*
     mov rsi, [rbp-8]            ; statements*
@@ -2351,6 +2367,10 @@ asm_process_statements:
 
     jmp .loop
 
+.failed_to_allocate_buffer:
+    mov rdi, 2
+    call runtime_exit
+
 .break:
     ;; TODO
     ;;mov rdi, [rbp-88]           ; asm.labels
@@ -2361,12 +2381,23 @@ asm_process_statements:
     ;;call sexp_print   ;
     ;;call runtime_print_newline
     ;;
+    ;;mov rdi, [rbp-16]           ; asm*
+    ;;call asm_fill_replacements
+
     mov rdi, [rbp-16]           ; asm*
-    call asm_fill_replacements
+    call asm_print_to_stderr
 
     leave
     ret
 
+;;; rdi: asm*
+asm_print_to_stderr:
+    mov rax, rdi
+    mov rdi, 2                  ; fd = strerr
+    mov rsi, [rax+96]           ; char* = asm.buffer
+    mov rdx, [rax+104]          ; length = asm.buffer-size
+    call runtime_write
+    ret
 
 ;;; rdi: asm*
 ;;; rsi: sexp* statements
@@ -2419,8 +2450,8 @@ asm_process_statements_loop:
     mov [rbp-8], rdi            ; asm*
 
     ;; init
-    mov qword [g_asm_buffer_cursor], 0
-    mov qword [g_asm_buffer_size], 0
+    mov rdi, [rbp-8]            ; asm*
+    mov qword [rdi+104], 0      ; asm.buffer-size
 
     mov rdi, [rbp-8]            ; asm*
     mov qword [rdi+16], 0       ; asm.last-label
@@ -5547,6 +5578,7 @@ asm_interp_inst_res:
     mov rdi, [rbp-8]            ; asm*
     mov rsi, rax                ; count
     mov rdx, 0                  ; imm
+    mov rcx, [rbp-24]           ; byte-size
     call asm_interp_inst_times
 
     leave
@@ -5555,11 +5587,13 @@ asm_interp_inst_res:
 ;;; rdi: asm*
 ;;; rsi: u64, count
 ;;; rdx: value imm
+;;; rcx: byte-size
 asm_interp_inst_times:
     push rbp
     mov rbp, rsp
-    sub rsp, 24
+    sub rsp, 40
 
+    mov [rbp-32], rcx           ; byte-size
     mov [rbp-24], rdx           ; imm
     mov [rbp-16], rsi           ; count
     mov [rbp-8], rdi            ; asm*
@@ -5571,7 +5605,8 @@ asm_interp_inst_times:
 
     mov rdi, [rbp-8]            ; asm*
     mov rsi, [rbp-24]           ; imm
-    call asm_write_u8
+    mov rdx, [rbp-32]           ; byte-size
+    call asm_write_value
 
     dec qword [rbp-16]
 
@@ -5669,7 +5704,7 @@ asm_interp_inst_align:
     je .div0
 
     mov rdi, [rbp-8]            ; asm*
-    mov rax, [g_asm_buffer_cursor]
+    mov rax, [rdi+104]          ; asm.buffer-size
     mov [rbp-56], rax           ; offset
 
     ;; -----    : offset 5
@@ -7902,97 +7937,65 @@ asm_write_value:
 ;;; rdi: asm*
 ;;; rsi: u8
 asm_write_u8:
-    mov rax, g_asm_buffer
-    mov rcx, [g_asm_buffer_cursor]
-
+    mov rax, [rdi+96]           ; asm.buffer
+    mov rcx, [rdi+104]          ; asm.buffer-size
     add rax, rcx
+
+    ;; write
     mov rdx, rsi
     mov byte [rax], dl
 
     add dword [rdi+44], 1       ; asm.current-inst-size
+    add qword [rdi+104], 1      ; asm.buffer-size
 
-    add rcx, 1
-    mov [g_asm_buffer_cursor], rcx
-
-    mov rax, [g_asm_buffer_size]
-    cmp rcx, rax
-    jl .break                   ; if rcx < rax
-
-    mov [g_asm_buffer_size], rcx
-
-.break:
     ret
 
 ;;; rdi: asm*
 ;;; rsi: u16
 asm_write_u16:
-    mov rax, g_asm_buffer
-    mov rcx, [g_asm_buffer_cursor]
-
+    mov rax, [rdi+96]           ; asm.buffer
+    mov rcx, [rdi+104]          ; asm.buffer-size
     add rax, rcx
+
+    ;; write
     mov rdx, rsi
     mov word [rax], dx
 
     add dword [rdi+44], 2       ; asm.current-inst-size
+    add qword [rdi+104], 2      ; asm.buffer-size
 
-    add rcx, 2
-    mov [g_asm_buffer_cursor], rcx
-
-    mov rax, [g_asm_buffer_size]
-    cmp rcx, rax
-    jl .break                   ; if rcx < rax
-
-    mov [g_asm_buffer_size], rcx
-
-.break:
     ret
 
 ;;; rdi: asm*
 ;;; rsi: u32
 asm_write_u32:
-    mov rax, g_asm_buffer
-    mov rcx, [g_asm_buffer_cursor]
-
+    mov rax, [rdi+96]           ; asm.buffer
+    mov rcx, [rdi+104]          ; asm.buffer-size
     add rax, rcx
+
+    ;; write
     mov rdx, rsi
     mov dword [rax], edx
 
     add dword [rdi+44], 4       ; asm.current-inst-size
+    add qword [rdi+104], 4      ; asm.buffer-size
 
-    add rcx, 4
-    mov [g_asm_buffer_cursor], rcx
-
-    mov rax, [g_asm_buffer_size]
-    cmp rcx, rax
-    jl .break                   ; if rcx < rax
-
-    mov [g_asm_buffer_size], rcx
-
-.break:
     ret
 
 ;;; rdi: asm*
 ;;; rsi: u64
 asm_write_u64:
-    mov rax, g_asm_buffer
-    mov rcx, [g_asm_buffer_cursor]
-
+    mov rax, [rdi+96]           ; asm.buffer
+    mov rcx, [rdi+104]          ; asm.buffer-size
     add rax, rcx
+
+    ;; write
     mov rdx, rsi
     mov qword [rax], rdx
 
     add dword [rdi+44], 8       ; asm.current-inst-size
+    add qword [rdi+104], 8      ; asm.buffer-size
 
-    add rcx, 8
-    mov [g_asm_buffer_cursor], rcx
-
-    mov rax, [g_asm_buffer_size]
-    cmp rcx, rax
-    jl .break                   ; if rcx < rax
-
-    mov [g_asm_buffer_size], rcx
-
-.break:
     ret
 
 
@@ -9109,6 +9112,33 @@ runtime_string_view_hash:
 runtime_exit:
     mov rax, 60
     syscall
+    ret
+
+
+;;; rdi: filename
+;;; rsi: flags
+;;; rdx: mode
+runtime_open:
+    mov rax, 2                  ; open
+    syscall
+    ret
+
+runtime_write:
+    mov rax, 1                  ; write
+    syscall
+    ret
+
+;;; rdi: addr
+;;; rsi: length
+;;; rdx: prot
+;;; rcx: flags
+runtime_mmap:
+    mov r10, rcx                ; flags
+;   mov r8, r8                  ; fd
+    mov r9, 0                   ; offset = 0
+    mov rax, 9                  ; mmap
+    syscall
+    ret
 
 
 ;;; rdi: u64, size
@@ -9156,13 +9186,12 @@ g_sexp_symbol_doller_doller:   dq 0
 g_code_buffer:  resb app_max_code_buffer_size
 g_code_size:    dq 0
 
-g_asm_buffer:  resb app_max_asm_buffer_size
 g_asm_buffer_size:  dq 0
 g_asm_buffer_cursor:dq 0
 
-g_asm_inst_sizes:   resd 0x10000
+g_asm_inst_sizes:   resd 0x100000
 
-g_sexp_objects:  resb 24 * app_max_sexp_objects_count
+g_sexp_objects:  resb app_max_sexp_objects_size
 g_sexp_objects_count:  dq 0
 
 g_heap: resb app_max_heap
@@ -9180,6 +9209,8 @@ text_sexp_int:  db "int", 0
 text_sexp_string:  db "string", 0
 text_error_failed_to_parse: db "Failed to parse", 0
 text_lf:     db 0x0a, 0
+
+str_dev_zero:   db "/dev/zero", 0
 
 str_paren_l:    db "(", 0
 str_paren_r:    db ")", 0
@@ -9465,6 +9496,7 @@ str_inst_org:   db "org", 0
 str_inst_equ:   db "equ", 0
 str_inst_align: db "align", 0
 str_inst_resb:  db "resb", 0
+str_inst_resd:  db "resd", 0
 str_inst_db:    db "db", 0
 str_inst_dw:    db "dw", 0
 str_inst_dd:    db "dd", 0
@@ -9543,6 +9575,10 @@ g_asm_inst_table:
     dq str_inst_resb
     dq asm_interp_inst_res
     dq 1
+
+    dq str_inst_resd
+    dq asm_interp_inst_res
+    dq 4
 
     dq str_inst_mov
     dq asm_write_inst_mov
