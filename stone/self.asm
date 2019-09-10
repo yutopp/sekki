@@ -4,8 +4,8 @@
 segment_align:  equ 0x1000
 
 app_max_code_buffer_size:   equ 0x10000
-app_max_asm_buffer_size:    equ 0x8000
-app_max_sexp_objects_count: equ 0x8000
+app_max_asm_buffer_size:    equ 0x80000
+app_max_sexp_objects_count: equ 0x80000
 app_max_heap:   equ 0x8000
 
 ;;; ELF Header
@@ -274,7 +274,7 @@ parse_code:
 
     call runtime_print_newline
 
-    mov rdi, 1
+    mov rdi, 2
     call runtime_exit
 
 .finished:
@@ -2119,6 +2119,25 @@ tnode_step_args:
     ret
 
 
+;;; rdi, sexp*
+tnode_print:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32
+
+    mov [rbp-8], rdi            ; value
+
+    mov rdi, [rbp-8]
+    call sexp_print
+
+    mov rdi, [rbp-8]
+    call tnode_calc_imm_size
+    mov rdi, rax
+    call runtime_print_uint64
+
+    leave
+    ret
+
 ;;; rdi: sexp*, (type . value)
 ;;; -> u64, type
 tnode_type:
@@ -2191,6 +2210,13 @@ tnode_calc_imm_size:
     call tnode_value            ; value
     mov rdi, rax
     call sexp_internal_int_value ; N
+
+    cmp rax, 0                  ; rax >= 0
+    jge .compare
+
+    neg rax                     ; abs
+
+.compare:
     cmp rax, 0x7f
     jle .size_1                 ; rax <= 0x7f, sizeof(1)
 
@@ -2510,7 +2536,7 @@ asm_process_statement:
     mov rdi, str_ice_invalid_statement
     call runtime_print_string
 
-    mov rdi, 1
+    mov rdi, 2
     call runtime_exit
 
 .label:
@@ -2582,7 +2608,7 @@ asm_process_statement:
 
     call runtime_print_newline
 
-    mov rdi, 1
+    mov rdi, 2
     call runtime_exit
 
 .break:
@@ -2868,7 +2894,7 @@ asm_infer_size:
     call runtime_print_uint64
     call runtime_print_newline
 
-    mov rdi, 1                  ; debug
+    mov rdi, 2                  ; debug
     call runtime_exit
 
 .break:
@@ -2949,7 +2975,7 @@ asm_calc_inst_size:
     call runtime_print_uint64
     call runtime_print_newline
 
-    mov rdi, 1                  ; debug
+    mov rdi, 2                  ; debug
     call runtime_exit
 
 .break:
@@ -3419,6 +3445,7 @@ inst_pattern_is_matched:
     jmp .matched
 
 .unexpected:
+    mov rdi, 32
     call runtime_exit
 
 .matched:
@@ -4756,6 +4783,7 @@ asm_param_compat_to_rel:
     jmp .failed
 
 .can_conv:
+    ;; -->
     mov rdi, [rbp-16]           ; expected-pattern*
     call inst_pattern_get_aux
 
@@ -4763,9 +4791,11 @@ asm_param_compat_to_rel:
     mov rsi, [rbp-24]           ; arg, sexp*
     mov rdx, rax
     call asm_calc_rel_sample
+
     mov rdi, rax
-    call sexp_print
-    call runtime_print_newline
+    call tnode_print
+
+    ;; <--
 
     mov rdi, [rbp-16]           ; expected-pattern*
     call inst_pattern_get_aux
@@ -4780,22 +4810,10 @@ asm_param_compat_to_rel:
     mov rdx, rax
     call asm_param_compat_to_imm
 
-
-
-    leave
-    ret
-
-    mov rax, [rbp-24]           ; arg, sexp*
-    mov [rbp-88], rax           ; result, sexp*
-
-    call runtime_exit
-
-    mov rax, [rbp-88]           ; result, sexp*
     jmp .break
 
 .failed:
     xor rax, rax
-    jmp .break
 
 .break:
     leave
@@ -4929,9 +4947,15 @@ asm_gen_inst:
     call runtime_print_uint64
     call runtime_print_newline
 
+    ;; TODO: fix
+    mov rax, [rbp-48]           ; args-num
+    cmp rax, 1
+    jle .skip_c
+
     cmp qword [rbp-88], 0       ; max-size == 0
     je .unsolvable_size
 
+ .skip_c:
     ;;
     mov qword [rbp-80], 0       ; counter
 
@@ -5096,6 +5120,7 @@ asm_gen_inst:
     jmp .break
 
 .unsolvable_size:
+    mov rdi, 3
     call runtime_exit
     jmp .break
 
@@ -5510,6 +5535,7 @@ asm_interp_inst_res:
     je .res
 
     ;; failed
+    mov rdi, 100
     call runtime_exit
 
 .res:
@@ -6382,7 +6408,7 @@ inst_set_imm:
     call runtime_print_string
     call runtime_print_newline
 
-    mov rdi, 1
+    mov rdi, 3
     call runtime_exit
 
 .write_imm:
@@ -9134,7 +9160,7 @@ g_asm_buffer:  resb app_max_asm_buffer_size
 g_asm_buffer_size:  dq 0
 g_asm_buffer_cursor:dq 0
 
-g_asm_inst_sizes:   resd 0x1000
+g_asm_inst_sizes:   resd 0x10000
 
 g_sexp_objects:  resb 24 * app_max_sexp_objects_count
 g_sexp_objects_count:  dq 0
