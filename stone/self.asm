@@ -5328,141 +5328,12 @@ asm_write_inst_jmp:
     call asm_write_inst_from_template
     ret
 
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-
-    mov qword [rbp-48], 0       ; size
-
-    mov qword [rbp-24], 0       ; args[1], sexp*(tnode)
-
-    mov [rbp-16], rsi           ; args: sexp*
-    mov [rbp-8], rdi            ; asm*
-
-    ;; TODO: check-length
-
-    ;; args[1]
-    mov rdi, [rbp-8]            ; asm*
-    lea rsi, [rbp-16]           ; (hd . rest)*
-    call asm_step_args_with_eval ; hd
-    mov [rbp-24], rax           ; args[1]
-
-    ;; args[1] inspect
-    mov rdi, [rbp-24]
-    call tnode_type_tag
-
-    cmp rax, 4                  ; integer
-    je .encode_d
-
-    cmp rax, 2                  ; label
-    je .encode_d
-
-    mov rdi, 10                 ; debug
-    call runtime_exit
-
-    ;; rel
-.encode_d:
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-24]           ; args[1], sexp*(tnode)
-    call asm_calc_rel_sample
-    mov rdi, rax
-    call tnode_calc_imm_size
-    mov [rbp-48], rax           ; size
-
-    cmp qword [rbp-48], 1
-    je .encode_d_rel8
-
-    mov rdi, [rbp-8]           ; asm*
-    mov rsi, 0xe9              ; JMP
-    call asm_inst_append_opcode
-
-    jmp .encode_d_body
-
-.encode_d_rel8:
-    mov rdi, [rbp-8]           ; asm*
-    mov rsi, 0xeb              ; JMP
-    call asm_inst_append_opcode
-
-    jmp .encode_d_body
-
-.encode_d_body:
-    mov rdi, [rbp-8]            ; asm*
-    mov rdi, [rdi]              ; asm.labels
-    call sexp_print
-    call runtime_print_newline
-
-    mov rdi, [rbp-48]
-    call runtime_print_uint64
-    call runtime_print_newline
-
-    ;; imm
-    mov rdi, [rbp-8]           ; asm*
-    mov rsi, [rbp-24]          ; arg[1]
-    mov rdx, [rbp-48]          ; size
-    call asm_inst_set_rel_sign_ext_8_32
-
-    jmp .break
-
-.break:
-    leave
-    ret
-
 
 ;;; rdi: asm*
 ;;; rsi: args
 asm_write_inst_call:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 48
-
-    mov qword [rbp-48], 0       ; size
-
-    mov qword [rbp-24], 0       ; args[1], sexp*(tnode)
-
-    mov [rbp-16], rsi           ; args: sexp*
-    mov [rbp-8], rdi            ; asm*
-
-    ;; TODO: check-length
-
-    ;; args[1]
-    mov rdi, [rbp-8]            ; asm*
-    lea rsi, [rbp-16]           ; (hd . rest)*
-    call asm_step_args_with_eval ; hd
-    mov [rbp-24], rax           ; args[1]
-
-    ;; args[1] inspect
-    mov rdi, [rbp-24]
-    call tnode_type_tag
-
-    cmp rax, 4                  ; integer
-    je .encode_d
-
-    cmp rax, 2                  ; label
-    je .encode_d
-
-    mov rdi, 10                 ; debug
-    call runtime_exit
-
-    ;; rel
-.encode_d:
-    mov rdi, [rbp-24]           ; args[1], sexp*(tnode)
-    call tnode_calc_imm_size
-    mov [rbp-48], rax           ; size
-
-    mov rdi, [rbp-8]           ; asm*
-    mov rsi, 0xe8              ; CALL
-    call asm_inst_append_opcode
-
-    ;; imm
-    mov rdi, [rbp-8]           ; asm*
-    mov rsi, [rbp-24]          ; arg[1]
-    mov rdx, [rbp-48]          ; size
-    call asm_inst_set_rel_sign_ext_32
-
-    jmp .break
-
-.break:
-    leave
+    mov rdx, g_asm_inst_template_call
+    call asm_write_inst_from_template
     ret
 
 
@@ -10299,6 +10170,21 @@ g_asm_inst_template_jmp:
     db 0x00
     db 0x01                     ; op-length
     db 0xe9
+    db const_inst_enc_d_0
+
+
+g_asm_inst_template_call:
+    dq 0                        ; normal
+    ;; D
+    dq .rel32
+    dq 0
+
+.rel32:                         ; D
+    dd 1
+    db 0x0f, 0x04, 0xff, 0x05   ; rel32, op(1)
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xe8
     db const_inst_enc_d_0
 
 section_rodata_end:
