@@ -4227,8 +4227,8 @@ gen:
     mov rsi, [rbp-16]           ; template*
     mov rdx, [rbp-128]          ; inst*
     mov rcx, [rbp-32]           ; args*, sexp**
-    mov r8, [rbp-40]            ; template-metadata
-    call gen_inst_1
+    mov r8, 1
+    call asm_gen_inst
 
     jmp .finish
 
@@ -4237,8 +4237,8 @@ gen:
     mov rsi, [rbp-16]           ; template*
     mov rdx, [rbp-128]          ; inst*
     mov rcx, [rbp-32]           ; args*, sexp**
-    mov r8, [rbp-40]            ; template-metadata
-    call gen_inst_2
+    mov r8, 2
+    call asm_gen_inst
 
     jmp .finish
 
@@ -4775,115 +4775,13 @@ match2:
     leave
     ret
 
-;;; rdi: asm*
-;;; rsi: template*
-;;; rdx: inst*
-;;; rcx: args, sexp**
-;;; r8: template-metadata
-gen_inst_1:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 176
-
-.args_num: equ 1
-
-.pattern_offset: equ 176
-    mov qword [rbp-176], 0       ; pattern[0] = pattern(args[1])
-
-.updated_args_offset: equ 160
-    mov qword [rbp-160], 0       ; updated-sexp*(tnode)[0]
-
-.expected_pattern_offset: equ 144
-    mov qword [rbp-144], 0       ; expected-pattern[0]
-
-    mov qword [rbp-96], 0       ; pattern*
-    mov qword [rbp-88], 0       ; expected-pattern*
-    mov qword [rbp-80], 0       ; counter
-
-    mov [rbp-48], r8            ; template-metadata
-    mov [rbp-40], rcx           ; args*, sexp**
-    mov [rbp-24], rdx           ; inst*
-    mov [rbp-16], rsi           ; template*
-    mov [rbp-8], rdi            ; asm*
-
-;;;-;;;
-    mov qword [rbp-80], 0       ; counter
-
-    mov rdi, [rbp-16]           ; template*
-    lea rsi, [rbp-96]           ; expected-pattern*
-    call inst_pattern_read
-;   add qword [rbp-16], 4       ; step template
-
-    mov rax, [rbp-40]           ; args**
-    add rax, qword [rbp-80]     ; args[n]*, sexp**
-
-    mov rdi, [rbp-8]            ; asm*
-    lea rsi, [rbp-96]           ; expected-pattern*
-    mov rdx, [rax]              ; args[n], sexp*
-
-    call asm_param_compat
-
-    inc qword [rbp-80]          ; counter++
-;;;-;;;
-
-
-    ;; patterns
-
-    mov rax, [rbp-40]           ; args*
-    mov rdi, [rax]              ; args[1], sexp*(tnode)
-    lea rsi, [rbp-.pattern_offset] ; (pattern[1])*
-    mov rdx, [rbp-48]           ; template-metadata
-    call asm_infer_size_x
-
-    ;; -> debug
-    lea rdi, [rbp-.pattern_offset] ; pattern[0]*
-    call inst_pattern_print
-    ;; <- debug
-
-    ;; matching
-
-    lea rdi, [rbp-.pattern_offset] ; pattern[0]*
-    lea rsi, [rbp-.expected_pattern_offset]
-    lea rdx, [rbp-16]           ; template**
-    mov rcx, .args_num
-    mov r8, [rbp-48]            ; template-metadata
-    call match
-    cmp rax, 0
-    je .not_matched
-
-.matched:
-    lea rdi, [rbp-.expected_pattern_offset]
-    mov rsi, [rbp-40]           ; args*
-    lea rdx, [rbp-.updated_args_offset]
-    mov rcx, .args_num
-    call match2
-
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-24]           ; inst*
-    mov rdx, [rbp-16]           ; template*
-    lea rax, [rbp-.updated_args_offset]
-    mov rcx, [rax]              ; args[0]
-    mov r8, 0                   ; args[1]
-    call inst_pattern_to_inst
-
-    mov rax, 1
-
-    jmp .break
-
-.not_matched:
-    xor rax, rax
-
-.break:
-    leave
-    ret
-
 
 ;;; rdi: asm*
 ;;; rsi: template*
 ;;; rdx: inst*
 ;;; rcx: args, sexp**
-;;; r8: template-metadata
-gen_inst_2:
+;;; r8:  args-num
+asm_gen_inst:
     push rbp
     mov rbp, rsp
     sub rsp, 176
@@ -4909,7 +4807,7 @@ gen_inst_2:
     mov qword [rbp-88], 0       ; expected-pattern*
     mov qword [rbp-80], 0       ; counter
 
-    mov [rbp-48], r8            ; template-metadata
+    mov [rbp-48], r8            ; args-num
     mov [rbp-40], rcx           ; args*, sexp**
     mov [rbp-24], rdx           ; inst*
     mov [rbp-16], rsi           ; template*
@@ -4927,7 +4825,8 @@ gen_inst_2:
     call runtime_print_newline
     ;;
 
-    cmp qword [rbp-80], 2       ; counter == 2
+    mov rax, [rbp-48]           ; args-num
+    cmp qword [rbp-80], rax     ; counter == args-num
     je .size_checked
 
     mov rcx, [rbp-80]           ; counter
@@ -4967,7 +4866,8 @@ gen_inst_2:
     call runtime_print_newline
     ;;
 
-    cmp qword [rbp-80], 2       ; counter == 2
+    mov rax, [rbp-48]           ; args-num
+    cmp qword [rbp-80], rax     ; counter == args-num
     je .size_updated
 
     mov rcx, [rbp-80]           ; counter
@@ -5028,7 +4928,8 @@ gen_inst_2:
     call runtime_print_newline
     ;;
 
-    cmp qword [rbp-80], 2       ; counter == 2
+    mov rax, [rbp-48]           ; args-num
+    cmp qword [rbp-80], rax     ; counter == args-num
     je .matched
 
     mov rdi, [rbp-16]           ; template*
@@ -5049,6 +4950,7 @@ gen_inst_2:
     lea rax, [rbp-.updated_args_offset]
     add rax, rcx                ; args[n], sexp*
 
+    ;; convert
     mov rdi, [rbp-8]            ; asm*
     lea rsi, [rbp-96]           ; expected-pattern*
     mov rdx, [rax]              ; args[n], sexp*
@@ -5065,10 +4967,6 @@ gen_inst_2:
     add rdi, rcx
     mov [rdi], rax
 
-;    mov rdi, rax
-;    call tnode_calc_imm_size
-;    sub [rbp-104], rax          ; cost
-
     mov rax, [rbp-104]          ; cost
     add [rbp-112], rax          ; total-cost
 
@@ -5077,6 +4975,30 @@ gen_inst_2:
     jmp .loop
 
 .matched:
+    mov rax, [rbp-48]           ; args-num
+
+    cmp rax, 1
+    je .matched_1
+
+    cmp rax, 2
+    je .matched_2
+
+    ;; ICE
+    mov rdi, 50
+    call runtime_exit
+
+.matched_1:
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-24]           ; inst*
+    mov rdx, [rbp-16]           ; template*
+    lea rax, [rbp-.updated_args_offset]
+    mov rcx, [rax]              ; args[0]
+    mov r8, 0                   ; args[1] = nil
+    call inst_pattern_to_inst
+
+    jmp .finish
+
+.matched_2:
     mov rdi, [rbp-8]            ; asm*
     mov rsi, [rbp-24]           ; inst*
     mov rdx, [rbp-16]           ; template*
@@ -5085,6 +5007,9 @@ gen_inst_2:
     mov r8, [rax+8]             ; args[1]
     call inst_pattern_to_inst
 
+    jmp .finish
+
+.finish:
     mov rax, [rbp-112]          ; total-cost
     add rax, 100                ; total-cost + 100
     jmp .break
@@ -5095,195 +5020,6 @@ gen_inst_2:
 
 .unsolvable_size:
     call runtime_exit
-    jmp .break
-
-.break:
-    leave
-    ret
-
-jjj:
-    ;; args[1] inspect
-    mov rdi, [rbp-24]
-    call tnode_type_tag
-
-    cmp rax, 1                  ; register
-    je .arg_1_reg
-
-    cmp rax, 5                  ; addressing
-    je .arg_1_mod_rm
-
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-24]           ;
-    call asm_exit_with_error_inst_arg_1
-
-.arg_1_reg:
-    mov rdi, [rbp-24]
-    call tnode_reg_index
-    cmp rax, 0
-    je .arg_1_reg_a
-
-    ;; args[2] inspect
-    mov rdi, [rbp-32]
-    call tnode_type_tag
-
-    cmp rax, 4                  ; integer
-    je .encode_mi
-
-    cmp rax, 2                  ; label
-    je .encode_mi
-
-    cmp rax, 1                  ; register
-    je .encode_mr
-
-    mov rdi, 11                 ; debug
-    call runtime_exit
-
-.arg_1_reg_a:
-    ;; args[2] inspect
-    mov rdi, [rbp-32]
-    call tnode_type_tag
-
-    cmp rax, 4                  ; integer
-    je .encode_i
-
-    cmp rax, 2                  ; label
-    je .encode_i
-
-    jmp .encode_rm
-
-.arg_1_mod_rm:
-    ;; args[2] inspect
-    mov rdi, [rbp-32]
-    call tnode_type_tag
-
-    cmp rax, 4                  ; integer
-    je .encode_mi
-
-    cmp rax, 2                  ; label
-    je .encode_mi
-
-    cmp rax, 1                  ; register
-    je .encode_mr
-
-    mov rdi, 13                 ; debug
-    call runtime_exit
-
-    ;; (R|E)?A(X|L), imm
-.encode_i:
-    mov rdi, [rbp-24]           ; args[1], sexp*(tnode)
-    call tnode_calc_imm_size
-    mov [rbp-48], rax           ; size
-
-    mov rdi, [rbp-24]           ; args[1], sexp*(tnode)
-    mov rsi, [rbp-32]           ; args[2], sexp*(tnode)
-    call asm_infer_size_ds
-
-    mov rcx, [rbp-48]           ; size
-    sub rcx, rax
-    cmp rcx, 7
-    je .encode_i_fallback
-
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, 0x05               ; ADD
-    call asm_inst_append_opcode
-
-    ;; imm
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-32]           ; arg[2]
-    mov rdx, [rbp-48]           ; size
-    call asm_inst_set_imm_sign_ext
-
-    jmp .break
-
-.encode_i_fallback:
-    cmp rax, 1
-    je .encode_mi_imm8
-
-    ;; r/m, imm
-.encode_mi:
-    mov rdi, [rbp-32]           ; args[2], sexp*(tnode)
-    call tnode_calc_imm_size
-    cmp rax, 1
-    je .encode_mi_imm8
-
-    mov rdi, [rbp-24]           ; args[1], sexp*(tnode)
-    mov rsi, [rbp-32]           ; args[2], sexp*(tnode)
-    call asm_infer_size_r_i
-    mov [rbp-48], rax           ; size
-
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, 0x81               ; ADD
-    call asm_inst_append_opcode
-
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, 0                  ; mod r/m, /r-degit
-    mov rdx, [rbp-24]           ; args[1], effective-reg
-    call asm_inst_set_r_digit_operands
-
-    ;; imm
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-32]           ; arg[2]
-    mov rdx, [rbp-48]           ; size
-    call asm_inst_set_imm_sign_ext
-
-    jmp .break
-
-.encode_mi_imm8:
-    mov rdi, [rbp-24]           ; args[1], sexp*(tnode)
-    call tnode_type_size
-    mov [rbp-48], rax           ; update-size
-
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, 0x83               ; ADD
-    call asm_inst_append_opcode
-
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, 0                  ; mod r/m, /r-degit
-    mov rdx, [rbp-24]           ; args[1], effective-reg
-    call asm_inst_set_r_digit_operands
-
-    ;; imm
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-32]           ; arg[2]
-    mov rdx, 1                  ; size
-    call asm_inst_set_imm_sign_ext
-
-    jmp .break
-
-    ;; r/m, r
-.encode_mr:
-    mov rdi, [rbp-24]           ; args[1], sexp*(tnode)
-    mov rsi, [rbp-32]           ; args[2], sexp*(tnode)
-    call asm_infer_size_r_i
-    mov [rbp-48], rax           ; size
-
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, 0x01               ; ADD
-    call asm_inst_append_opcode
-
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-32]           ; args[2], /r-digit
-    mov rdx, [rbp-24]           ; args[1], effective-reg
-    call asm_inst_set_operands
-
-    jmp .break
-
-   ;; r, r/m
-.encode_rm:
-    mov rdi, [rbp-24]           ; args[1], sexp*(tnode)
-    mov rsi, [rbp-32]           ; args[2], sexp*(tnode)
-    call asm_infer_size
-    mov [rbp-48], rax           ; size
-
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, 0x03               ; ADD
-    call asm_inst_append_opcode
-
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-24]           ; args[1], /r-digit
-    mov rdx, [rbp-32]           ; args[2], effective-reg
-    call asm_inst_set_operands
-
     jmp .break
 
 .break:
