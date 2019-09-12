@@ -553,22 +553,23 @@ util_size_num:
 
 
     ;; [REG] | [DISP]
-
-    ;; [PAT*N] | [PAT+REG] | [REG+DISP]
-    ;; [PAT*N+REG] | [PAT+REG+DISP]
+const_addr_pat_0_0_0_r:         equ 0x01
+const_addr_pat_0_0_0_d:         equ 0x02
+    ;; [PAT*N] | [REG+PAT] | [REG+DISP]
+const_addr_pat_0_0_p_i:         equ 0x03
+const_addr_pat_0_0_r_p:         equ 0x04
+const_addr_pat_0_0_r_d:         equ 0x05
+const_addr_pat_0_0_r_d_signed:  equ 0x15
+    ;; [PAT*N+REG] | [REG+PAT+DISP] | [REG+PAT*N]
+const_addr_pat_0_r_p_d:         equ 0x06
+const_addr_pat_0_r_p_d_signed:  equ 0x16
+const_addr_pat_0_p_i_r:         equ 0x07
+const_addr_pat_0_r_p_i:         equ 0x08
     ;; [PAT*N+REG+DISP]
-const_addr_pat_0_0_0_r:        equ 0x01
-const_addr_pat_0_0_0_d:        equ 0x02
-const_addr_pat_0_0_r_d:        equ 0x03
-const_addr_pat_0_0_r_d_signed: equ 0x13
-const_addr_pat_0_r_r_d:        equ 0x04
-const_addr_pat_0_r_r_d_signed: equ 0x14
-const_addr_pat_r_i_r_d:        equ 0x05
-const_addr_pat_r_i_r_d_signed:  equ 0x15
-const_addr_pat_0_r_i_r: equ 0x06
-const_addr_pat_0_0_r_r:        equ 0x07
+const_addr_pat_p_i_r_d:         equ 0x0e
+const_addr_pat_p_i_r_d_signed:  equ 0x1e
 
-g_parse_addressing_pattern_size: equ 17
+g_parse_addressing_pattern_size: equ 18
 
 g_parse_addressing_pattern:
     ;; [REG]
@@ -591,10 +592,10 @@ g_parse_addressing_pattern:
     db 0, 0
     db 0, 0
 
-    ;; [PAT+REG]
-    db 2, const_addr_pat_0_0_r_r
+    ;; [REG+PAT]
+    db 2, const_addr_pat_0_0_r_p
     db 0, 1 ; REG
-    db 0, 1 ; + REG
+    db 0, 1 ; + PAT
     db 0, 0
     db 0, 0
 
@@ -624,57 +625,64 @@ g_parse_addressing_pattern:
     db 0, 0
 
     ;; [PAT+REG+DISP]
-    db 3, const_addr_pat_0_r_r_d
-    db 0, 1 ; REG
+    db 3, const_addr_pat_0_r_p_d
+    db 0, 1 ; PAT
     db 0, 1 ; + REG
     db 0, 4 ; + IMM
     db 0, 0
 
-    db 3, const_addr_pat_0_r_r_d_signed
-    db 0, 1 ; REG
+    db 3, const_addr_pat_0_r_p_d_signed
+    db 0, 1 ; PAT
     db 0, 1 ; + REG
     db 1, 4 ; - IMM
     db 0, 0
 
-    db 3, const_addr_pat_0_r_r_d
-    db 0, 1 ; REG
+    db 3, const_addr_pat_0_r_p_d
+    db 0, 1 ; PAT
     db 0, 1 ; + REG
     db 0, 2 ; + LABEL
     db 0, 0
 
-    db 3, const_addr_pat_0_r_r_d_signed
-    db 0, 1 ; REG
+    db 3, const_addr_pat_0_r_p_d_signed
+    db 0, 1 ; PAT
     db 0, 1 ; + REG
     db 1, 2 ; - LABEL
     db 0, 0
 
     ;; [PAT*N+REG]
-    db 3, const_addr_pat_0_r_i_r
-    db 0, 1 ; REG
+    db 3, const_addr_pat_0_p_i_r
+    db 0, 1 ; PAT
     db 2, 4 ; * IMM
     db 0, 1 ; + REG
     db 0, 0
 
+    ;; [REG+PAT*N]
+    db 3, const_addr_pat_0_r_p_i
+    db 0, 1 ; REG
+    db 0, 1 ; + PAT
+    db 2, 4 ; * IMM
+    db 0, 0
+
     ;; [PAT*N+REG+DISP]
-    db 4, const_addr_pat_r_i_r_d
+    db 4, const_addr_pat_p_i_r_d
     db 0, 1 ; REG
     db 2, 4 ; * IMM
     db 0, 1 ; + REG
     db 0, 4 ; + IMM
 
-    db 4, const_addr_pat_r_i_r_d_signed
+    db 4, const_addr_pat_p_i_r_d_signed
     db 0, 1 ; REG
     db 2, 4 ; * IMM
     db 0, 1 ; + REG
     db 1, 4 ; - IMM
 
-    db 4, const_addr_pat_r_i_r_d
+    db 4, const_addr_pat_p_i_r_d
     db 0, 1 ; REG
     db 2, 4 ; * IMM
     db 0, 1 ; + REG
     db 0, 2 ; + IMM
 
-    db 4, const_addr_pat_r_i_r_d_signed
+    db 4, const_addr_pat_p_i_r_d_signed
     db 0, 1 ; REG
     db 2, 4 ; * IMM
     db 0, 1 ; + REG
@@ -978,23 +986,36 @@ parse_addressing:
     mov [rbp-128], rax        ; kind
     and rax, 0x0f             ; kind.type-mask
 
+    ;; 1
     cmp rax, const_addr_pat_0_0_0_r
     je .pat_0_0_0_r
 
     cmp rax, const_addr_pat_0_0_0_d
     je .pat_0_0_0_d
 
-    cmp rax, const_addr_pat_0_0_r_r
-    je .pat_0_0_r_r
+    ;; 2
+    cmp rax, const_addr_pat_0_0_p_i
+    je .pat_0_0_p_i
+
+    cmp rax, const_addr_pat_0_0_r_p
+    je .pat_0_0_r_p
 
     cmp rax, const_addr_pat_0_0_r_d
     je .pat_0_0_r_d
 
-    cmp rax, const_addr_pat_0_r_r_d
-    je .pat_0_r_r_d
+    ;; 3
+    cmp rax, const_addr_pat_0_r_p_d
+    je .pat_0_r_p_d
 
-    cmp rax, const_addr_pat_0_r_i_r
-    je .pat_0_r_i_r
+    cmp rax, const_addr_pat_0_p_i_r
+    je .pat_0_p_i_r
+
+    cmp rax, const_addr_pat_0_r_p_i
+    je .pat_0_r_p_i
+
+    ;; 4
+    cmp rax, const_addr_pat_p_i_r_d
+    je .pat_p_i_r_d
 
     ;; ICE
     mov rdi, 101
@@ -1012,11 +1033,19 @@ parse_addressing:
 
     jmp .matched
 
-.pat_0_0_r_r:
+.pat_0_0_p_i:
     mov rax, [rbp-88]           ; exprs[0]
     mov [rbp-120], rax          ; scale-reg
     mov rax, [rbp-80]           ; exprs[1]
+    mov [rbp-112], rax          ; scale-N
+
+    jmp .matched
+
+.pat_0_0_r_p:
+    mov rax, [rbp-88]           ; exprs[0]
     mov [rbp-104], rax          ; base-reg
+    mov rax, [rbp-80]           ; exprs[1]
+    mov [rbp-120], rax          ; scale-reg
 
     jmp .matched
 
@@ -1028,23 +1057,57 @@ parse_addressing:
 
     jmp .matched
 
-.pat_0_r_r_d:
+.pat_0_r_p_d:
     mov rax, [rbp-88]           ; exprs[0]
-    mov [rbp-120], rax          ; scale-reg
-    mov rax, [rbp-80]           ; exprs[1]
     mov [rbp-104], rax          ; base-reg
+    mov rax, [rbp-80]           ; exprs[1]
+    mov [rbp-120], rax          ; scale-reg
     mov rax, [rbp-72]           ; exprs[2]
     mov [rbp-96], rax           ; disp
 
     jmp .matched
 
-.pat_0_r_i_r:
+.pat_0_p_i_r:
     mov rax, [rbp-88]           ; exprs[0]
     mov [rbp-120], rax          ; scale-reg
     mov rax, [rbp-80]           ; exprs[1]
     mov [rbp-112], rax          ; scale-N
     mov rax, [rbp-72]           ; exprs[2]
     mov [rbp-104], rax          ; base-reg
+
+    jmp .matched
+
+.pat_0_r_p_i:
+    mov rax, [rbp-88]           ; exprs[0]
+    mov [rbp-104], rax          ; base-reg
+    mov rax, [rbp-80]           ; exprs[1]
+    mov [rbp-120], rax          ; scale-reg
+    mov rax, [rbp-72]           ; exprs[2]
+    mov [rbp-112], rax          ; scale-N
+
+    jmp .matched
+
+.pat_p_i_r_d:
+    mov rax, [rbp-88]           ; exprs[0]
+    mov [rbp-120], rax          ; scale-reg
+    mov rax, [rbp-80]           ; exprs[1]
+    mov [rbp-112], rax          ; scale-N
+    mov rax, [rbp-72]           ; exprs[2]
+    mov [rbp-104], rax          ; base-reg
+    mov rax, [rbp-64]           ; exprs[3]
+    mov [rbp-96], rax           ; disp
+
+    jmp .matched
+
+.pat_r_p_i_d:
+    mov rax, [rbp-88]           ; exprs[0]
+    mov [rbp-104], rax          ; base-reg
+    mov rax, [rbp-80]           ; exprs[1]
+    mov [rbp-120], rax          ; scale-reg
+    mov rax, [rbp-72]           ; exprs[2]
+    mov [rbp-112], rax          ; scale-N
+    mov rax, [rbp-64]           ; exprs[3]
+    mov [rbp-96], rax           ; disp
 
     jmp .matched
 
