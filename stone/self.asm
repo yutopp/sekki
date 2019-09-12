@@ -5,9 +5,8 @@ segment_align:  equ 0x1000
 
 app_max_code_buffer_size:   equ 0x100000
 app_max_asm_buffer_size:    equ 0xff00000
-app_max_sexp_objects_count: equ 0x800000
-app_max_sexp_objects_size:  equ 0xc000000 ; 24 *
-app_max_heap:   equ 0x80000
+app_max_heap:   equ 0x2f000000
+app_heap_page_size: equ 0x2000
 app_max_asm_inst_size:   equ 0x100000
 
 ;;; ELF Header
@@ -142,6 +141,8 @@ _start:
     mov qword [rbp-24], 0       ; sexp*, last-label
 
     mov qword [rbp-8], 0        ; statements
+
+    call runtime_init
 
     call load_code_from_stdin
     ;; call print_loaded_code_to_stdout
@@ -9677,43 +9678,31 @@ sexp_alloc:
     push rbp
     mov rbp, rsp
 
-    mov rcx, [g_sexp_objects_count]
-    cmp rcx, app_max_sexp_objects_count
-    je sexp_cannot_alloc
-
-    mov rax, rcx
-    mov rdx, 24
-    mul rdx
-    mov rcx, g_sexp_objects
-    add rax, rcx
-
-    mov rcx, [g_sexp_objects_count]
-    inc rcx
-    mov [g_sexp_objects_count], rcx
+    mov rdi, 24
+    mov rdx, 24                 ; ???
+    call runtime_malloc
 
     leave
     ret
 
-sexp_cannot_alloc:
-    mov rdi, str_ice_nomore_sexps
-    call runtime_print_string
-    call runtime_print_newline
-
-    mov rdi, [g_sexp_objects_count]
-    call runtime_print_uint64
-    call runtime_print_newline
-
-    mov rdi, 3
-    call runtime_exit
 
 ;;; rdi: int
 sexp_alloc_int:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 8
+
+    mov [rbp-8], rdi            ; N
+
     call sexp_alloc
     mov rcx, rax
 
     mov qword [rcx], 0          ; tag
+
+    mov rdi, [rbp-8]            ; N
     mov [rcx+8], rdi
 
+    leave
     ret
 
 
@@ -9723,11 +9712,11 @@ sexp_alloc_string:
     mov rbp, rsp
     sub rsp, 8
 
-    mov [rbp-8], rdi
+    mov [rbp-8], rdi            ; char*
 
     call runtime_strlen
 
-    mov rdi, [rbp-8]
+    mov rdi, [rbp-8]            ; char*
     mov rsi, rax
     call sexp_alloc_string_view
 
@@ -9738,26 +9727,48 @@ sexp_alloc_string:
 ;;; rdi: *char
 ;;; rsi: u64
 sexp_alloc_string_view:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 24
+
+    mov [rbp-16], rsi           ; length
+    mov [rbp-8], rdi            ; char*
+
     call sexp_alloc
     mov rcx, rax
 
     mov qword [rcx], 1          ; tag
-    mov [rcx+8], rdi
-    mov [rcx+16], rsi
 
+    mov rdi, [rbp-8]            ; char*
+    mov [rcx+8], rdi
+    mov rdi, [rbp-16]           ; length
+    mov [rcx+16], rdi
+
+    leave
     ret
 
 
 ;;; rdi: *value car
 ;;; rsi: *value cdr
 sexp_alloc_cons:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 24
+
+    mov [rbp-16], rsi           ; cdr
+    mov [rbp-8], rdi            ; car
+
     call sexp_alloc
     mov rcx, rax
 
     mov qword [rcx], 2          ; tag
-    mov [rcx+8], rdi
-    mov [rcx+16], rsi
 
+    mov rdi, [rbp-8]            ; car
+    mov [rcx+8], rdi
+    mov rdi, [rbp-16]           ; cdr
+    mov [rcx+16], rdi
+
+    leave
     ret
 
 ;;; rdi: *value
@@ -10057,7 +10068,7 @@ runtime_print_string:
     call runtime_strlen
 
     mov rdi, [rbp-8]
-    mov rsi, rax
+    mov rsi, rax                ; length
     call runtime_print_string_view
 
     leave
@@ -10289,15 +10300,26 @@ runtime_mmap:
 
 ;;; rdi: u64, size
 runtime_malloc:
-    mov rax, [g_heap_size]
-    mov rcx, app_max_heap
-    sub rcx, rdi
-    cmp rax, rcx       ; heap_size > max - size
-    jg .no_memory
+    push rbp
+    mov rbp, rsp
+    sub rsp, 8
 
-    mov rax, g_heap
+    mov [rbp-8], rdi            ; size
+
+    cmp qword [g_heap_last_addr], 0
+    je .alloc
+
+.recover:
+    mov rax, [g_heap_size]
+    mov rcx, app_heap_page_size
+    sub rcx, [rbp-8]            ; size
+    cmp rax, rcx       ; heap_size > page_size - size
+    jg .alloc
+
+    mov rax, [g_heap_last_addr]
     add rax, [g_heap_size]      ; g_heap + offset
 
+    mov rdi, [rbp-8]            ; size
     add qword [g_heap_size], rdi
 
     jmp .break
@@ -10311,9 +10333,52 @@ runtime_malloc:
     call runtime_exit
     jmp .break
 
+.alloc:
+    mov rdi, 0x0                ; addr
+    mov rsi, app_heap_page_size ; length
+    mov rdx, 0x03               ; 0x0011 = WRITE | READ
+    mov rcx, 0x2                ; flags = MAP_PRIVATE
+    mov r8, [g_runtime_dev_zero_fd] ; fd
+    call runtime_mmap
+
+    cmp rax, -1
+    je .no_memory
+
+    mov qword [g_heap_last_addr], rax
+    mov qword [g_heap_size], 0
+
+    jmp .recover
+
 .break:
+    leave
     ret
 
+
+runtime_init:
+    mov rax, [g_runtime_initialized]
+    cmp rax, 0
+    jne .break
+
+    ;; open /dev/zero
+    mov rdi, str_dev_zero       ; filename
+    mov rsi, 0                  ; READ
+    call runtime_open
+
+    cmp rax, 0
+    je .failed
+
+    mov [g_runtime_dev_zero_fd], rax ; fd
+
+    mov qword [g_runtime_initialized], 1
+
+    jmp .break
+
+.failed:
+    mov rdi, 4
+    call runtime_exit
+
+.break:
+    ret
 
 section_text_end:
     ;; --< text
@@ -10330,6 +10395,9 @@ section_bss_begin:
 
 ret_code:   dq 42
 
+g_runtime_initialized:  dq 0
+g_runtime_dev_zero_fd:  dq 0
+
 g_sexp_symbol_doller:   dq 0
 g_sexp_symbol_doller_doller:   dq 0
 
@@ -10341,11 +10409,11 @@ g_asm_buffer_cursor:dq 0
 
 g_asm_inst_sizes:   resd app_max_asm_inst_size
 
-g_sexp_objects:  resb app_max_sexp_objects_size
-g_sexp_objects_count:  dq 0
+g_heap_last_addr:   dq 0
+g_heap_size:        dq 0
 
-g_heap: resb app_max_heap
-g_heap_size:     dq 0
+;g_heap: resb app_max_heap
+;g_heap_size:     dq 0
 
 section_bss_end:
     ;; --< bss
