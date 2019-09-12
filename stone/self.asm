@@ -529,8 +529,9 @@ const_addr_pat_0_r_r_d_signed: equ 0x14
 const_addr_pat_r_i_r_d:        equ 0x05
 const_addr_pat_r_i_r_d_signed:  equ 0x15
 const_addr_pat_0_r_i_r: equ 0x06
+const_addr_pat_0_0_r_r:        equ 0x07
 
-g_parse_addressing_pattern_size: equ 16
+g_parse_addressing_pattern_size: equ 17
 
 g_parse_addressing_pattern:
     ;; [REG]
@@ -550,6 +551,13 @@ g_parse_addressing_pattern:
     db 1, const_addr_pat_0_0_0_d
     db 0, 2 ; LABEL
     db 0, 0
+    db 0, 0
+    db 0, 0
+
+    ;; [PAT+REG]
+    db 2, const_addr_pat_0_0_r_r
+    db 0, 1 ; REG
+    db 0, 1 ; + REG
     db 0, 0
     db 0, 0
 
@@ -939,6 +947,9 @@ parse_addressing:
     cmp rax, const_addr_pat_0_0_0_d
     je .pat_0_0_0_d
 
+    cmp rax, const_addr_pat_0_0_r_r
+    je .pat_0_0_r_r
+
     cmp rax, const_addr_pat_0_0_r_d
     je .pat_0_0_r_d
 
@@ -961,6 +972,14 @@ parse_addressing:
 .pat_0_0_0_d:
     mov rax, [rbp-88]           ; exprs[0]
     mov [rbp-96], rax           ; disp
+
+    jmp .matched
+
+.pat_0_0_r_r:
+    mov rax, [rbp-88]           ; exprs[0]
+    mov [rbp-120], rax          ; scale-reg
+    mov rax, [rbp-80]           ; exprs[1]
+    mov [rbp-104], rax          ; base-reg
 
     jmp .matched
 
@@ -5030,8 +5049,9 @@ asm_param_compat:
 asm_param_compat_to_reg:
     push rbp
     mov rbp, rsp
-    sub rsp, 88
+    sub rsp, 104
 
+    mov byte [rbp-96], 0        ; expected-reg-index
     mov qword [rbp-88], 0       ; result, sexp*
     mov qword [rbp-80], 0       ; arg.size
 
@@ -5049,6 +5069,21 @@ asm_param_compat_to_reg:
     jmp .failed
 
 .can_conv:
+    mov rdi, [rbp-16]           ; expected-pattern*
+    call inst_pattern_get_value
+    cmp rax, 0xff
+    je .can_conv_normal
+
+    ;; check register index
+    mov [rbp-96], rax           ; expected-reg-index
+
+    mov rdi, [rbp-24]           ; arg
+    call tnode_reg_index
+
+    cmp byte [rbp-96], al       ; expected-reg-index != reg-index
+    jne .failed
+
+.can_conv_normal:
     mov rdi, [rbp-24]           ; arg
     call tnode_type_size
     mov [rbp-80], rax           ; arg.size
@@ -10523,7 +10558,7 @@ g_asm_inst_template_mov:
     dd 2
     db 0x05, 0x01, 0xff, 0x00   ; r/m8
     db 0x01, 0x01, 0xff, 0x00   ; r8
-    db const_inst_rex
+    db 0x00
     db 0x01                     ; op-length
     db 0x88
     db const_asm_inst_type_mr
@@ -10644,32 +10679,23 @@ g_asm_inst_push_r64:
 g_asm_inst_template_cmp:
     dq 0                        ; normal
     ;; I
-    dq g_asm_inst_cmp_al_imm8
-    dq g_asm_inst_cmp_ax_imm16
-    dq g_asm_inst_cmp_eax_imm32
-    dq g_asm_inst_cmp_rax_imm32
+    dq .al_imm8
+    dq .ax_imm16
+    dq .eax_imm32
+    dq .rax_imm32
     ;; MI
-    dq g_asm_inst_cmp_rm8_imm8
-;    dq g_asm_inst_cmp_rm16_imm16
-;    dq g_asm_inst_cmp_rm32_imm32
-    dq g_asm_inst_cmp_rm64_imm32
-
-;    dq g_asm_inst_cmp_rm16_imm8
-;    dq g_asm_inst_cmp_rm32_imm8
-    dq g_asm_inst_cmp_rm64_imm8
+    dq .rm8_imm8
+    dq .rm64_imm32
+    dq .rm64_imm8
     ;; MR
-;    dq g_asm_inst_cmp_rm8_r8
-;    dq g_asm_inst_cmp_rm16_r16
-;    dq g_asm_inst_cmp_rm32_r32
-    dq g_asm_inst_cmp_rm64_r64
+    dq .rm8_r8
+    dq .rm64_r64
     ;; RM
-;    dq g_asm_inst_cmp_r8_rm8
-;    dq g_asm_inst_cmp_r16_rm16
-;    dq g_asm_inst_cmp_r32_rm32
-;   dq g_asm_inst_cmp_r64_rm64
+    dq .r8_rm8
+    dq .r64_rm64
     dq 0
 
-g_asm_inst_cmp_al_imm8:
+.al_imm8:
     dd 2
     db 0x01, 0x01, 0x00, 0x00   ; al
     db 0x04, 0x01, 0xff, 0x00   ; imm8
@@ -10678,7 +10704,7 @@ g_asm_inst_cmp_al_imm8:
     db 0x3c
     db const_asm_inst_type_i
 
-g_asm_inst_cmp_ax_imm16:
+.ax_imm16:
     dd 2
     db 0x01, 0x02, 0x00, 0x00   ; ax
     db 0x04, 0x02, 0xff, 0x00   ; imm16
@@ -10687,7 +10713,7 @@ g_asm_inst_cmp_ax_imm16:
     db 0x3d
     db const_asm_inst_type_i
 
-g_asm_inst_cmp_eax_imm32:
+.eax_imm32:
     dd 2
     db 0x01, 0x04, 0x00, 0x00   ; eax
     db 0x04, 0x04, 0xff, 0x00   ; imm32
@@ -10696,7 +10722,7 @@ g_asm_inst_cmp_eax_imm32:
     db 0x3d
     db const_asm_inst_type_i
 
-g_asm_inst_cmp_rax_imm32:
+.rax_imm32:
     dd 2
     db 0x01, 0x08, 0x00, 0x00   ; rax
     db 0x04, 0x04, 0xff, 0x00   ; imm32
@@ -10705,16 +10731,16 @@ g_asm_inst_cmp_rax_imm32:
     db 0x3d
     db const_asm_inst_type_i
 
-g_asm_inst_cmp_rm8_imm8:
+.rm8_imm8:
     dd 2
     db 0x05, 0x01, 0xff, 0x00   ; r/m8
     db 0x04, 0x01, 0xff, 0x00   ; imm8
-    db const_inst_rex
+    db 0x00
     db 0x01                     ; op-length
     db 0x80
     db const_asm_inst_type_mi, 7
 
-g_asm_inst_cmp_rm64_imm32:
+.rm64_imm32:
     dd 2
     db 0x05, 0x08, 0xff, 0x00   ; r/m64
     db 0x04, 0x04, 0xff, 0x00   ; imm32
@@ -10723,7 +10749,7 @@ g_asm_inst_cmp_rm64_imm32:
     db 0x81
     db const_asm_inst_type_mi, 7
 
-g_asm_inst_cmp_rm64_imm8:
+.rm64_imm8:
     dd 2
     db 0x05, 0x08, 0xff, 0x00   ; r/m64
     db 0x04, 0x01, 0xff, 0x00   ; imm8
@@ -10732,7 +10758,16 @@ g_asm_inst_cmp_rm64_imm8:
     db 0x83
     db const_asm_inst_type_mi, 7
 
-g_asm_inst_cmp_rm64_r64:
+.rm8_r8:                        ; MR
+    dd 2
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db 0x01, 0x01, 0xff, 0x00   ; r8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0x38
+    db const_inst_enc_m_r
+
+.rm64_r64:
     dd 2
     db 0x05, 0x08, 0xff, 0x00   ; r/m64
     db 0x01, 0x08, 0xff, 0x00   ; r64
@@ -10740,6 +10775,24 @@ g_asm_inst_cmp_rm64_r64:
     db 0x01                     ; op-length
     db 0x39
     db const_asm_inst_type_mr
+
+.r8_rm8:                        ; MR
+    dd 2
+    db 0x01, 0x01, 0xff, 0x00   ; r8
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db const_inst_rex
+    db 0x01                     ; op-length
+    db 0x3a
+    db const_inst_enc_r_m
+
+.r64_rm64:                      ; MR
+    dd 2
+    db 0x01, 0x08, 0xff, 0x00   ; r64
+    db 0x05, 0x08, 0xff, 0x00   ; r/m64
+    db const_inst_rex_w
+    db 0x01                     ; op-length
+    db 0x3b
+    db const_inst_enc_r_m
 
 ;;;
 ;;; ADD
