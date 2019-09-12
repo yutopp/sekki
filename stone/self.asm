@@ -4630,6 +4630,28 @@ asm_write_inst_div:
     call asm_write_inst_from_template
     ret
 
+;;; rdi: asm*
+;;; rsi: args
+asm_write_inst_mul:
+    mov rdx, g_asm_inst_template_mul
+    call asm_write_inst_from_template
+    ret
+
+
+;;; rdi: asm*
+;;; rsi: args
+asm_write_inst_shl:
+    mov rdx, g_asm_inst_template_shl
+    call asm_write_inst_from_template
+    ret
+
+;;; rdi: asm*
+;;; rsi: args
+asm_write_inst_shr:
+    mov rdx, g_asm_inst_template_shr
+    call asm_write_inst_from_template
+    ret
+
 
 ;;; rdi: asm*
 ;;; rsi: args
@@ -8395,7 +8417,7 @@ asm_eval_expr:
     mov rdi, 0x80               ; dummy-value
     call sexp_alloc_int
     mov rdi, rax
-    mov rsi, 1                  ; expected-size
+    mov rsi, 4                  ; expected-size
     call tnode_alloc_uint_node
     jmp .break
 
@@ -10365,6 +10387,9 @@ str_inst_cmp:   db "cmp", 0
 str_inst_add:   db "add", 0
 str_inst_sub:   db "sub", 0
 str_inst_div:   db "div", 0
+str_inst_mul:   db "mul", 0
+str_inst_shl:   db "shl", 0
+str_inst_shr:   db "shr", 0
 str_inst_inc:   db "inc", 0
 str_inst_dec:   db "dec", 0
 str_inst_ja:    db "ja", 0
@@ -10469,6 +10494,18 @@ g_asm_inst_table:
 
     dq str_inst_div
     dq asm_write_inst_div
+    dq 0
+
+    dq str_inst_mul
+    dq asm_write_inst_mul
+    dq 0
+
+    dq str_inst_shl
+    dq asm_write_inst_shl
+    dq 0
+
+    dq str_inst_shr
+    dq asm_write_inst_shr
     dq 0
 
     dq str_inst_inc
@@ -11046,6 +11083,104 @@ g_asm_inst_template_sub:
 
 
 ;;;
+;;; SHL
+;;;
+g_asm_inst_template_shl:
+    dq 0                        ; normal
+    ;; MI
+    dq .rm8_imm8
+    dq .rm16_imm8
+    dq .rm32_imm8
+    dq .rm64_imm8
+    dq 0
+
+.rm8_imm8:                      ; MI
+    dd 2
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xc0                     ;
+    db const_inst_enc_m_i, 4    ; /r
+
+.rm16_imm8:                     ; MI
+    dd 2
+    db 0x05, 0x02, 0xff, 0x00   ; r/m16
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xc1                     ;
+    db const_inst_enc_m_i, 4    ; /r
+
+.rm32_imm8:                     ; MI
+    dd 2
+    db 0x05, 0x04, 0xff, 0x00   ; r/m32
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xc1
+    db const_inst_enc_m_i, 4    ; /r
+
+.rm64_imm8:                     ; MI
+    dd 2
+    db 0x05, 0x08, 0xff, 0x00   ; r/m64
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db const_inst_rex_w
+    db 0x01                     ; op-length
+    db 0xc1
+    db const_inst_enc_m_i, 4    ; /r
+
+
+;;;
+;;; SHR
+;;;
+g_asm_inst_template_shr:
+    dq 0                        ; normal
+    ;; MI
+    dq .rm8_imm8
+    dq .rm16_imm8
+    dq .rm32_imm8
+    dq .rm64_imm8
+    dq 0
+
+.rm8_imm8:                      ; MI
+    dd 2
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xc0                     ;
+    db const_inst_enc_m_i, 5    ; /r
+
+.rm16_imm8:                     ; MI
+    dd 2
+    db 0x05, 0x02, 0xff, 0x00   ; r/m16
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xc1                     ;
+    db const_inst_enc_m_i, 5    ; /r
+
+.rm32_imm8:                     ; MI
+    dd 2
+    db 0x05, 0x04, 0xff, 0x00   ; r/m32
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xc1
+    db const_inst_enc_m_i, 5    ; /r
+
+.rm64_imm8:                     ; MI
+    dd 2
+    db 0x05, 0x08, 0xff, 0x00   ; r/m64
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db const_inst_rex_w
+    db 0x01                     ; op-length
+    db 0xc1
+    db const_inst_enc_m_i, 5    ; /r
+
+
+;;;
 ;;; DIV
 ;;;
 g_asm_inst_template_div:
@@ -11088,6 +11223,51 @@ g_asm_inst_template_div:
     db 0x01                     ; op-length
     db 0xf7
     db const_inst_enc_m_0, 6    ; /r
+
+
+;;;
+;;; mul
+;;;
+g_asm_inst_template_mul:
+    dq 0                        ; normal
+    ;; M
+    dq .rm8
+    dq .rm16
+    dq .rm32
+    dq .rm64
+    dq 0
+
+.rm8:                           ; M
+    dd 1
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xf6
+    db const_inst_enc_m_0, 4    ; /r
+
+.rm16:                          ; M
+    dd 1
+    db 0x05, 0x02, 0xff, 0x00   ; r/m16
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xf7
+    db const_inst_enc_m_0, 4    ; /r
+
+.rm32:                          ; M
+    dd 1
+    db 0x05, 0x04, 0xff, 0x00   ; r/m32
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xf7
+    db const_inst_enc_m_0, 4    ; /r
+
+.rm64:                          ; M
+    dd 1
+    db 0x05, 0x08, 0xff, 0x00   ; r/m64
+    db const_inst_rex_w
+    db 0x01                     ; op-length
+    db 0xf7
+    db const_inst_enc_m_0, 4    ; /r
 
 
 ;;;
