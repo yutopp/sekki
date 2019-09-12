@@ -1750,8 +1750,9 @@ parse_string:
 parse_integer:
     push rbp
     mov rbp, rsp
-    sub rsp, 72
+    sub rsp, 88
 
+    mov byte [rbp-80], 0        ; neg-flag
     mov qword [rbp-72], 1       ; radix^counter
     mov qword [rbp-64], 0       ; counter
     mov qword [rbp-56], 0       ; digits, u8 * 16
@@ -1765,6 +1766,15 @@ parse_integer:
     call parser_get_index
     mov [rbp-16], rax
 
+    ;; -
+    mov rdi, [rbp-8]
+    call parse_minus
+    cmp rax, 0
+    je .skip_neg
+
+    mov byte [rbp-80], 1        ; neg-flag
+
+.skip_neg:
     ;; read head
     mov rdi, [rbp-8]
     call parser_get_char
@@ -1886,7 +1896,13 @@ parse_integer:
     jmp .sum_loop
 
 .sum_finish:
-    mov rdi, [rbp-40]
+    cmp byte [rbp-80], 0        ; neg-flag
+    je .skip_neg_calc
+
+    neg qword [rbp-40]          ; result
+
+.skip_neg_calc:
+    mov rdi, [rbp-40]           ; result
     call sexp_alloc_int
 
     jmp .finalize
@@ -4733,6 +4749,19 @@ asm_write_inst_dec:
     call asm_write_inst_from_template
     ret
 
+;;; rdi: asm*
+;;; rsi: args
+asm_write_inst_not:
+    mov rdx, g_asm_inst_template_not
+    call asm_write_inst_from_template
+    ret
+
+;;; rdi: asm*
+;;; rsi: args
+asm_write_inst_neg:
+    mov rdx, g_asm_inst_template_neg
+    call asm_write_inst_from_template
+    ret
 
 ;;; rdi: asm*
 ;;; rsi: args
@@ -10470,6 +10499,8 @@ str_inst_and:   db "and", 0
 str_inst_or:    db "or", 0
 str_inst_inc:   db "inc", 0
 str_inst_dec:   db "dec", 0
+str_inst_not:   db "not", 0
+str_inst_neg:   db "neg", 0
 str_inst_ja:    db "ja", 0
 str_inst_je:    db "je", 0
 str_inst_jg:    db "jg", 0
@@ -10602,6 +10633,15 @@ g_asm_inst_table:
     dq str_inst_dec
     dq asm_write_inst_dec
     dq 0
+
+    dq str_inst_not
+    dq asm_write_inst_not
+    dq 0
+
+    dq str_inst_neg
+    dq asm_write_inst_neg
+    dq 0
+
 
     dq str_inst_ja
     dq asm_write_inst_jcc
@@ -11887,6 +11927,97 @@ g_asm_inst_template_dec:
     db 0x01                     ; op-length
     db 0x48
     db const_inst_enc_o_0
+
+
+;;;
+;;; NOT
+;;;
+g_asm_inst_template_not:
+    dq 0                        ; normal
+    ;; M
+    dq .rm8
+    dq .rm16
+    dq .rm32
+    dq .rm64
+    dq 0
+
+.rm8:                           ; M
+    dd 1
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xf6
+    db const_inst_enc_m_0, 2    ; /r
+
+.rm16:                          ; M
+    dd 1
+    db 0x05, 0x02, 0xff, 0x00   ; r/m16
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xf7
+    db const_inst_enc_m_0, 2    ; /r
+
+.rm32:                          ; M
+    dd 1
+    db 0x05, 0x04, 0xff, 0x00   ; r/m32
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xf7
+    db const_inst_enc_m_0, 2    ; /r
+
+.rm64:                          ; M
+    dd 1
+    db 0x05, 0x08, 0xff, 0x00   ; r/m64
+    db const_inst_rex_w
+    db 0x01                     ; op-length
+    db 0xf7
+    db const_inst_enc_m_0, 2    ; /r
+
+
+;;;
+;;; NEG
+;;;
+g_asm_inst_template_neg:
+    dq 0                        ; normal
+    ;; M
+    dq .rm8
+    dq .rm16
+    dq .rm32
+    dq .rm64
+    dq 0
+
+.rm8:                           ; M
+    dd 1
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xf6
+    db const_inst_enc_m_0, 3    ; /r
+
+.rm16:                          ; M
+    dd 1
+    db 0x05, 0x02, 0xff, 0x00   ; r/m16
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xf7
+    db const_inst_enc_m_0, 3    ; /r
+
+.rm32:                          ; M
+    dd 1
+    db 0x05, 0x04, 0xff, 0x00   ; r/m32
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xf7
+    db const_inst_enc_m_0, 3    ; /r
+
+.rm64:                          ; M
+    dd 1
+    db 0x05, 0x08, 0xff, 0x00   ; r/m64
+    db const_inst_rex_w
+    db 0x01                     ; op-length
+    db 0xf7
+    db const_inst_enc_m_0, 3    ; /r
+
 
 ;;;
 ;;; JMP
