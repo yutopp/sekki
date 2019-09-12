@@ -4477,6 +4477,10 @@ inst_pattern_to_inst:
     ;; r, r/m
 .operand_rm:
     mov rdi, [rbp-16]           ; inst*
+    mov rsi, [rbp-40]           ; args[1]
+    call inst_set_prefix_if
+
+    mov rdi, [rbp-16]           ; inst*
     mov rsi, [rbp-40]           ; args[1], mod r/m, /r-degit
     mov rdx, [rbp-48]           ; args[2], effective-reg
     call inst_set_operands
@@ -4485,6 +4489,10 @@ inst_pattern_to_inst:
 
     ;; r/m, r
 .operand_mr:
+    mov rdi, [rbp-16]           ; inst*
+    mov rsi, [rbp-48]           ; args[2]
+    call inst_set_prefix_if
+
     mov rdi, [rbp-16]           ; inst*
     mov rsi, [rbp-48]           ; args[2], mod r/m, /r-degit
     mov rdx, [rbp-40]           ; args[1], effective-reg
@@ -11210,8 +11218,13 @@ g_asm_inst_template_and:
     dq .rm32_imm8
     dq .rm64_imm8
     ;; MR
+    dq .rm8_r8
+    dq .rm16_r16
+    dq .rm32_r32
     dq .rm64_r64
     ;; RM
+    dq .r8_rm8
+    dq .r16_rm16
     dq .r32_rm32
     dq .r64_rm64
     dq 0
@@ -11315,6 +11328,33 @@ g_asm_inst_template_and:
     db 0x83
     db const_inst_enc_m_i, 4    ; /r
 
+.rm8_r8:                      ; MR
+    dd 2
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db 0x01, 0x01, 0xff, 0x00   ; reg8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0x20
+    db const_inst_enc_m_r
+
+.rm16_r16:                      ; MR
+    dd 2
+    db 0x05, 0x02, 0xff, 0x00   ; r/m16
+    db 0x01, 0x02, 0xff, 0x00   ; reg16
+    db 0x00
+    db 0x01                     ; op-length
+    db 0x21
+    db const_inst_enc_m_r
+
+.rm32_r32:                      ; MR
+    dd 2
+    db 0x05, 0x04, 0xff, 0x00   ; r/m32
+    db 0x01, 0x04, 0xff, 0x00   ; reg32
+    db 0x00
+    db 0x01                     ; op-length
+    db 0x21
+    db const_inst_enc_m_r
+
 .rm64_r64:                      ; MR
     dd 2
     db 0x05, 0x08, 0xff, 0x00   ; r/m64
@@ -11323,6 +11363,24 @@ g_asm_inst_template_and:
     db 0x01                     ; op-length
     db 0x21
     db const_inst_enc_m_r
+
+.r8_rm8:                      ; RM
+    dd 2
+    db 0x01, 0x01, 0xff, 0x00   ; reg8
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0x23
+    db const_inst_enc_r_m
+
+.r16_rm16:                      ; RM
+    dd 2
+    db 0x01, 0x02, 0xff, 0x00   ; reg16
+    db 0x05, 0x02, 0xff, 0x00   ; r/m16
+    db 0x00
+    db 0x01                     ; op-length
+    db 0x23
+    db const_inst_enc_r_m
 
 .r32_rm32:                      ; RM
     dd 2
