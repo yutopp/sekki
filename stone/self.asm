@@ -514,6 +514,43 @@ parse_expr:
     leave
     ret
 
+;;; rdi:
+util_size_num:
+    cmp rdi, 1
+    je .size_1
+
+    cmp rdi, 2
+    je .size_2
+
+    cmp rdi, 4
+    je .size_4
+
+    cmp rdi, 8
+    je .size_8
+
+    ;; debug
+    mov rdi, 104
+    call runtime_exit
+
+.size_1:
+    mov rax, 0
+    jmp .break
+
+.size_2:
+    mov rax, 1
+    jmp .break
+
+.size_4:
+    mov rax, 2
+    jmp .break
+
+.size_8:
+    mov rax, 3
+    jmp .break
+
+.break:
+    ret
+
 
     ;; [REG] | [DISP]
 
@@ -3121,6 +3158,10 @@ asm_update_inst_if_efficient:
     ;; debug
     call runtime_print_newline
     call runtime_print_newline
+    mov rdi, str_debug_show_inst_info
+    call runtime_print_string
+    call runtime_print_newline
+
     mov rdi, [rbp-8]            ; asm*
     call asm_inst_current_size
     mov rdi, rax
@@ -3146,10 +3187,11 @@ asm_update_inst_if_efficient:
 
     mov rax, [rbp-32]           ; inst-cost
     mov rdi, [rbp-8]            ; asm*
-    cmp rax, [rdi+88]           ; inst-cost > asm.latest-inst-cost
-    jg .break
+    cmp rax, [rdi+88]           ; inst-cost < asm.latest-inst-cost
+    jl .update
 
-    mov [rdi+88], rax           ; asm.latest-inst-cost = inst-cost
+    cmp rax, [rdi+88]           ; inst-cost != asm.latest-inst-cost
+    jne .break
 
     ;; check-inst
     mov rdi, [rbp-8]            ; asm*
@@ -3166,6 +3208,9 @@ asm_update_inst_if_efficient:
     jmp .break
 
 .update:
+    mov rax, [rbp-32]           ; inst-cost
+    mov [rdi+88], rax           ; asm.latest-inst-cost = inst-cost
+
     ;; [0, 8)
     mov rcx, [rbp-16]           ; inst*
     mov rcx, [rcx]              ; inst[0, 8)
@@ -5101,6 +5146,7 @@ asm_param_compat:
 ;;; rdi: asm*
 ;;; rsi: expected-pattern*
 ;;; rdx: sexp*(tnode*)
+;;; rcx: u64*, cost
 asm_param_compat_to_reg:
     push rbp
     mov rbp, rsp
@@ -5200,6 +5246,7 @@ asm_param_compat_to_reg:
 ;;; rdi: asm*
 ;;; rsi: expected-pattern*
 ;;; rdx: sexp*(tnode*)
+;;; rcx: u64*, cost
 asm_param_compat_to_mod:
     push rbp
     mov rbp, rsp
@@ -5254,6 +5301,7 @@ asm_param_compat_to_mod:
 ;;; rdi: asm*
 ;;; rsi: expected-pattern*
 ;;; rdx: sexp*(tnode*)
+;;; rcx: u64*, cost
 asm_param_compat_to_imm:
     push rbp
     mov rbp, rsp
@@ -5340,6 +5388,7 @@ asm_param_compat_to_imm:
 ;;; rdi: asm*
 ;;; rsi: expected-pattern*
 ;;; rdx: sexp*(tnode*)
+;;; rcx: u64*, cost
 asm_param_compat_to_rel:
     push rbp
     mov rbp, rsp
@@ -5372,7 +5421,6 @@ asm_param_compat_to_rel:
 
     mov rdi, rax
     call tnode_print
-
     ;; <--
 
     mov rdi, [rbp-16]           ; expected-pattern*
@@ -5386,6 +5434,7 @@ asm_param_compat_to_rel:
     mov rdi, [rbp-8]            ; asm*
     mov rsi, [rbp-16]           ; expected-pattern*
     mov rdx, rax
+    mov rcx, [rbp-32]           ; cost
     call asm_param_compat_to_imm
 
     jmp .break
@@ -5616,13 +5665,14 @@ asm_gen_inst:
     call inst_pattern_read
     add qword [rbp-16], 4       ; step template
 
-    mov rcx, [rbp-80]           ; counter
-    shl rcx, 3                  ; counter * 8
-    lea rax, [rbp-.updated_args_offset]
-    add rax, rcx                ; args[n], sexp*
-    mov rdi, [rax]
-    call tnode_calc_imm_size
-    mov [rbp-104], rax          ; cost
+;    mov rcx, [rbp-80]           ; counter
+;    shl rcx, 3                  ; counter * 8
+;    lea rax, [rbp-.updated_args_offset]
+;    add rax, rcx                ; args[n], sexp*
+;    mov rdi, [rax]
+;    call tnode_calc_imm_size
+                                ;    mov [rbp-104], rax          ; cost
+    mov qword [rbp-104], 0            ; cost
 
     mov rcx, [rbp-80]           ; counter
     shl rcx, 3                  ; counter * 8
@@ -10438,6 +10488,7 @@ str_debug_finished: db "[DEBUG] finished", 0
 str_debug_failed_to_parse_addr: db "[DEBUG] Failed to parse addr", 0
 str_debug_compat: db "[DEBUG] compat", 0
 str_debug_parse_addressing: db "[DEBUG] parse.addressing", 0
+str_debug_show_inst_info:   db "[DEBUG] inst info", 0
 
 g_asm_inst_table:
     dq str_inst_bits
