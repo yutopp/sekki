@@ -4800,6 +4800,13 @@ asm_write_inst_or:
 
 ;;; rdi: asm*
 ;;; rsi: args
+asm_write_inst_lea:
+    mov rdx, g_asm_inst_template_lea
+    call asm_write_inst_from_template
+    ret
+
+;;; rdi: asm*
+;;; rsi: args
 asm_write_inst_inc:
     mov rdx, g_asm_inst_template_inc
     call asm_write_inst_from_template
@@ -6450,6 +6457,7 @@ asm_step_args_with_eval:
 
     mov rdi, [rbp-8]            ; asm*
     mov rsi, rax
+    mov rdx, 0                  ; TODO
     call asm_eval_expr
 
     leave
@@ -7532,6 +7540,10 @@ inst_set_r_digit_operands:
     je .mod_0_disp
 
     mov rdi, [rbp-96]           ; disp
+    call tnode_print
+    call runtime_print_newline
+
+    mov rdi, [rbp-96]           ; disp
     call tnode_calc_imm_size
     cmp rax, 1                  ; sizeof(disp) > 1
     jg .maybe_mod_2
@@ -7549,8 +7561,14 @@ inst_set_r_digit_operands:
 
     ;; [REG] + disp32
 .maybe_mod_2:
-	mov rdi, 44
-    call runtime_exit
+    mov byte [rbp-72], 2        ; mod
+    mov byte [rbp-69], 4        ; disp-size
+
+    mov rdi, [rbp-104]          ; args.base-reg
+    call tnode_reg_index
+    mov byte [rbp-70], al       ; r/m
+
+    jmp .mod
 
 
     mov rdi, [rbp-24]
@@ -8369,39 +8387,46 @@ asm_decode_arg:
 
 ;;; rdi: asm*
 ;;; rsi: sexp*, tnode
+;;; rdx:
 ;;; -> sexp*, tnode
 asm_eval_expr_addressing:
     push rbp
     mov rbp, rsp
-    sub rsp, 24
+    sub rsp, 40
 
-    mov qword [rbp-24], 0       ; cdr
+    mov [rbp-32], rdx           ; shrink
+    mov qword [rbp-24], 0       ; car = nil
     mov [rbp-16], rsi           ; (type . value): sexp*
     mov [rbp-8], rdi            ; asm*
 
     cmp qword [rbp-16], 0
     je .nil
 
-    ;; eval cdr
-    mov rdi, [rbp-16]
-    call sexp_cdr
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, rax
-    call asm_eval_expr_addressing
-    mov [rbp-24], rax           ; cdr
-
     ;; eval car
     mov rdi, [rbp-16]
     call sexp_car
     cmp rax, 0
     je .skip_eval
+
     mov rdi, [rbp-8]            ; asm*
     mov rsi, rax
+    mov rdx, [rbp-32],          ; shrink
     call asm_eval_expr
+    mov [rbp-24], rax           ; car
+
+    mov qword [rbp-32], 1       ; shrink, update
 
 .skip_eval:
-    mov rdi, rax                ; car
-    mov rsi, [rbp-24]           ; cdr
+    ;; eval cdr
+    mov rdi, [rbp-16]
+    call sexp_cdr
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, rax
+    mov rdx, [rbp-32]           ; shrink
+    call asm_eval_expr_addressing
+
+    mov rdi, [rbp-24]                ; car
+    mov rsi, rax           ; cdr
     call sexp_alloc_cons
 
     jmp .break
@@ -8415,12 +8440,14 @@ asm_eval_expr_addressing:
 
 ;;; rdi: asm*
 ;;; rsi: sexp*, tnode
+;;; rdx: shrink-label
 ;;; -> sexp*, tnode
 asm_eval_expr:
     push rbp
     mov rbp, rsp
-    sub rsp, 88
+    sub rsp, 104
 
+    mov qword [rbp-104], rdx    ; shrink
     mov qword [rbp-88], 0       ; calc
 
     mov qword [rbp-80], 0       ; (type . value): sexp*: lhs
@@ -8481,6 +8508,7 @@ asm_eval_expr:
     call sexp_car               ; lhs
     mov rdi, [rbp-8]            ; asm*
     mov rsi, rax
+    mov rdx, [rbp-104]          ; shrink
     call asm_eval_expr
     mov qword [rbp-48], rax     ; evaluated-lhs
 
@@ -8491,6 +8519,7 @@ asm_eval_expr:
     call sexp_cdr               ; rhs
     mov rdi, [rbp-8]            ; asm*
     mov rsi, rax
+    mov rdx, [rbp-104]          ; shrink
     call asm_eval_expr
     mov qword [rbp-32], rax     ; evaluated-rhs
 
@@ -8619,6 +8648,7 @@ asm_eval_expr:
     call tnode_value            ; value as symbol
     mov rdi, [rbp-8]            ; asm*
     mov rsi, rax
+    mov rdx, [rbp-104]          ; shrink
     call asm_find_label_value
 
     cmp rax, 0
@@ -8634,7 +8664,11 @@ asm_eval_expr:
     mov rdi, rax
     call sexp_alloc_int
     mov rdi, rax
+    mov rsi, 0                  ; shrinkable
+    cmp qword [rbp-64], 0       ; shrink
+    jne .arg_label_doller_keep_shrinkable
     mov rsi, 8                  ; not-shrinkable
+.arg_label_doller_keep_shrinkable:
     call tnode_alloc_uint_node
 
     jmp .break
@@ -8647,7 +8681,11 @@ asm_eval_expr:
     mov rdi, rax
     call sexp_alloc_int
     mov rdi, rax
+    mov rsi, 0                  ; shrinkable
+    cmp qword [rbp-64], 0       ; shrink
+    jne .arg_label_doller_doller_keep_shrinkable
     mov rsi, 8                  ; not-shrinkable
+.arg_label_doller_doller_keep_shrinkable:
     call tnode_alloc_uint_node
 
     jmp .break
@@ -8657,6 +8695,7 @@ asm_eval_expr:
     call tnode_value
     mov rdi, [rbp-8]            ; asm*
     mov rsi, rax
+    mov rdx, 0                  ; not-shrink
     call asm_eval_expr_addressing
     mov [rbp-88], rax           ; tmp, value
 
@@ -9066,11 +9105,13 @@ asm_add_labels:
 
 ;;; rdi: asm*
 ;;; rsi: sexp*, symbol
+;;; rdx; bool, shrink
 asm_find_labels:
     push rbp
     mov rbp, rsp
     sub rsp, 40
 
+    mov [rbp-40], rdx           ; bool, shrink
     mov [rbp-32], rsi           ; sexp*, finding-symbol
     mov qword [rbp-24], 0       ; sexp*, current
     mov qword [rbp-16], 0       ; sexp*, labels
@@ -9122,7 +9163,11 @@ asm_find_labels:
     mov rdi, rax                ; accumurated inst-index
     call sexp_alloc_int
     mov rdi, rax
+    mov rsi, 0                  ; shrinkable
+    cmp qword [rbp-40], 0       ; shrink
+    jne .keep_shrinkable
     mov rsi, 8                  ; not-shrinkable
+.keep_shrinkable:
     call tnode_alloc_uint_node
 
     jmp .break
@@ -9180,11 +9225,13 @@ asm_add_consts:
 
 ;;; rdi: asm*
 ;;; rsi: sexp*, symbol
+;;; rdx:
 asm_find_consts:
     push rbp
     mov rbp, rsp
     sub rsp, 56
 
+    mov qword [rbp-64], rdx     ; shrink
     mov qword [rbp-56], 0       ; return-value
     mov qword [rbp-48], 0       ; snapshot
     mov [rbp-40], rsi           ; sexp*, finding-symbol
@@ -9239,6 +9286,7 @@ asm_find_consts:
     call sexp_car
     mov rdi, [rbp-8]            ; asm*
     mov rsi, rax                ; (type . value)
+    mov rdx, [rbp-64]           ; shrink
     call asm_eval_expr
     mov [rbp-56], rax           ; return-value
 
@@ -9257,11 +9305,13 @@ asm_find_consts:
 
 ;;; rdi: asm*
 ;;; rsi: sexp*, symbol
+;;; rdx: shrink
 asm_find_label_value:
     push rbp
     mov rbp, rsp
     sub rsp, 24
 
+    mov [rbp-24], rdx           ; bool, shrink
     mov [rbp-16], rsi           ; sexp*, symbol
     mov [rbp-8], rdi            ; asm*
 
@@ -9277,12 +9327,14 @@ asm_find_label_value:
 
     mov rdi, [rbp-8]            ; asm*
     mov rsi, [rbp-16]           ; symbol
+    mov rdx, [rbp-24]           ; shrink
     call asm_find_consts
     cmp rax, 0
     jne .break                  ; found
 
     mov rdi, [rbp-8]            ; asm*
     mov rsi, [rbp-16]           ; symbol
+    mov rdx, [rbp-24]           ; shrink
     call asm_find_labels
 
 .break:
@@ -10560,6 +10612,7 @@ str_inst_shl:   db "shl", 0
 str_inst_shr:   db "shr", 0
 str_inst_and:   db "and", 0
 str_inst_or:    db "or", 0
+str_inst_lea:   db "lea", 0
 str_inst_inc:   db "inc", 0
 str_inst_dec:   db "dec", 0
 str_inst_not:   db "not", 0
@@ -10687,6 +10740,10 @@ g_asm_inst_table:
 
     dq str_inst_or
     dq asm_write_inst_or
+    dq 0
+
+    dq str_inst_lea
+    dq asm_write_inst_lea
     dq 0
 
     dq str_inst_inc
@@ -11771,6 +11828,55 @@ g_asm_inst_template_or:
     db const_inst_rex_w
     db 0x01                     ; op-length
     db 0x0b
+    db const_inst_enc_r_m
+
+
+;;;
+;;; LEA
+;;;
+g_asm_inst_template_lea:
+    dq 0                        ; normal
+    ;; RM
+    dq .r16_rm16
+    dq .r32_rm32
+    dq .r64_rm8
+    dq .r64_rm64
+    dq 0
+
+.r16_rm16:                      ; RM
+    dd 2
+    db 0x01, 0x02, 0xff, 0x00   ; reg16
+    db 0x05, 0x02, 0xff, 0x00   ; r/m16
+    db 0x00
+    db 0x01                     ; op-length
+    db 0x8d
+    db const_inst_enc_r_m
+
+.r32_rm32:                      ; RM
+    dd 2
+    db 0x01, 0x04, 0xff, 0x00   ; reg32
+    db 0x05, 0x04, 0xff, 0x00   ; r/m32
+    db 0x00
+    db 0x01                     ; op-length
+    db 0x8d
+    db const_inst_enc_r_m
+
+.r64_rm8:                      ; RM
+    dd 2
+    db 0x01, 0x08, 0xff, 0x00   ; reg64
+    db 0x05, 0x01, 0xff, 0x00   ; r/m64
+    db const_inst_rex_w
+    db 0x01                     ; op-length
+    db 0x8d
+    db const_inst_enc_r_m
+
+.r64_rm64:                      ; RM
+    dd 2
+    db 0x01, 0x08, 0xff, 0x00   ; reg64
+    db 0x05, 0x08, 0xff, 0x00   ; r/m64
+    db const_inst_rex_w
+    db 0x01                     ; op-length
+    db 0x8d
     db const_inst_enc_r_m
 
 
