@@ -4625,6 +4625,14 @@ asm_write_inst_sub:
 
 ;;; rdi: asm*
 ;;; rsi: args
+asm_write_inst_div:
+    mov rdx, g_asm_inst_template_div
+    call asm_write_inst_from_template
+    ret
+
+
+;;; rdi: asm*
+;;; rsi: args
 asm_write_inst_inc:
     mov rdx, g_asm_inst_template_inc
     call asm_write_inst_from_template
@@ -4723,6 +4731,10 @@ asm_write_inst_from_template:
 .failed:
     mov rdi, str_error_unsupported_inst_form
     call runtime_print_string
+    call runtime_print_newline
+
+    mov rdi, [rbp-16]
+    call sexp_print
     call runtime_print_newline
 
     mov rdi, 2
@@ -10352,6 +10364,7 @@ str_inst_pop:   db "pop", 0
 str_inst_cmp:   db "cmp", 0
 str_inst_add:   db "add", 0
 str_inst_sub:   db "sub", 0
+str_inst_div:   db "div", 0
 str_inst_inc:   db "inc", 0
 str_inst_dec:   db "dec", 0
 str_inst_ja:    db "ja", 0
@@ -10454,6 +10467,10 @@ g_asm_inst_table:
     dq asm_write_inst_sub
     dq 0
 
+    dq str_inst_div
+    dq asm_write_inst_div
+    dq 0
+
     dq str_inst_inc
     dq asm_write_inst_inc
     dq 0
@@ -10551,6 +10568,7 @@ g_asm_inst_template_mov:
     dq .r32_imm32
     dq .r64_imm64
     ;; MI
+    dq .rm8_imm8
     dq .rm64_imm32
     dq 0
 
@@ -10617,13 +10635,22 @@ g_asm_inst_template_mov:
     db 0xb8                     ;
     db const_asm_inst_type_oi
 
+.rm8_imm8:
+    dd 2
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xc6
+    db const_inst_enc_m_i, 0
+
 .rm64_imm32:
     dd 2
     db 0x05, 0x08, 0xff, 0x00   ; r/m64
     db 0x04, 0x04, 0xff, 0x00   ; imm32
     db const_inst_rex_w
     db 0x01                     ; op-length
-    db 0xc7                     ;
+    db 0xc7
     db const_asm_inst_type_mi, 0
 
 
@@ -10895,6 +10922,10 @@ g_asm_inst_template_sub:
     dq .al_imm8
     dq .ax_imm16
     ;; MI
+    dq .rm8_imm8
+    dq .rm16_imm16
+    dq .rm32_imm32
+    dq .rm64_imm32
     dq .rm16_imm8
     dq .rm32_imm8
     dq .rm64_imm8
@@ -10922,6 +10953,42 @@ g_asm_inst_template_sub:
     db 0x01                     ; op-length
     db 0x2d
     db const_inst_enc_0_i
+
+.rm8_imm8:                      ; MI
+    dd 2
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0x80                     ;
+    db const_inst_enc_m_i, 5    ; /r
+
+.rm16_imm16:                    ; MI
+    dd 2
+    db 0x05, 0x02, 0xff, 0x00   ; r/m16
+    db 0x04, 0x02, 0xff, 0x00   ; imm16
+    db 0x00
+    db 0x01                     ; op-length
+    db 0x81                     ;
+    db const_inst_enc_m_i, 5    ; /r
+
+.rm32_imm32:                     ; MI
+    dd 2
+    db 0x05, 0x04, 0xff, 0x00   ; r/m32
+    db 0x04, 0x04, 0xff, 0x00   ; imm32
+    db 0x00
+    db 0x01                     ; op-length
+    db 0x81                     ;
+    db const_inst_enc_m_i, 5    ; /r
+
+.rm64_imm32:                    ; MI
+    dd 2
+    db 0x05, 0x08, 0xff, 0x00   ; r/m64
+    db 0x04, 0x04, 0xff, 0x00   ; imm32
+    db const_inst_rex_w
+    db 0x01                     ; op-length
+    db 0x81                     ;
+    db const_inst_enc_m_i, 5    ; /r
 
 .rm16_imm8:                     ; MI
     dd 2
@@ -10976,6 +11043,51 @@ g_asm_inst_template_sub:
     db 0x01                     ; op-length
     db 0x2b
     db const_inst_enc_r_m
+
+
+;;;
+;;; DIV
+;;;
+g_asm_inst_template_div:
+    dq 0                        ; normal
+    ;; M
+    dq .rm8
+    dq .rm16
+    dq .rm32
+    dq .rm64
+    dq 0
+
+.rm8:                           ; M
+    dd 1
+    db 0x05, 0x01, 0xff, 0x00   ; r/m8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xf6
+    db const_inst_enc_m_0, 6    ; /r
+
+.rm16:                          ; M
+    dd 1
+    db 0x05, 0x02, 0xff, 0x00   ; r/m16
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xf7
+    db const_inst_enc_m_0, 6    ; /r
+
+.rm32:                          ; M
+    dd 1
+    db 0x05, 0x04, 0xff, 0x00   ; r/m32
+    db 0x00
+    db 0x01                     ; op-length
+    db 0xf7
+    db const_inst_enc_m_0, 6    ; /r
+
+.rm64:                          ; M
+    dd 1
+    db 0x05, 0x08, 0xff, 0x00   ; r/m64
+    db const_inst_rex_w
+    db 0x01                     ; op-length
+    db 0xf7
+    db const_inst_enc_m_0, 6    ; /r
 
 
 ;;;
