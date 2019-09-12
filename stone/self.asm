@@ -887,23 +887,27 @@ parse_addressing:
     je .failed
 
 .parsed:
-    ;; <--
-    mov rdi, [rbp-88]
-    call sexp_print
-    call runtime_print_newline
-
-    mov rdi, [rbp-80]
-    call sexp_print
-    call runtime_print_newline
-
-    mov rdi, [rbp-72]
-    call sexp_print
-    call runtime_print_newline
-
-    mov rdi, [rbp-64]
-    call sexp_print
-    call runtime_print_newline
-    ;; -->
+;    ;; <--
+;    mov rdi, str_debug_parse_addressing
+;    call runtime_print_string
+;    call runtime_print_newline
+;
+;    mov rdi, [rbp-88]           ; 0
+;    call sexp_print
+;    call runtime_print_newline
+;
+;    mov rdi, [rbp-80]           ; 1
+;    call sexp_print
+;    call runtime_print_newline
+;
+;    mov rdi, [rbp-72]           ; 2
+;    call sexp_print
+;    call runtime_print_newline
+;
+;    mov rdi, [rbp-64]           ; 3
+;    call sexp_print
+;    call runtime_print_newline
+;    ;; -->
 
     mov qword [rbp-144], g_parse_addressing_pattern
     mov qword [rbp-136], 0      ; match-index
@@ -989,6 +993,28 @@ parse_addressing:
     jmp .matched
 
 .matched:
+    ;; <--
+    mov rdi, str_debug_parse_addressing
+    call runtime_print_string
+    call runtime_print_newline
+
+    mov rdi, [rbp-120]           ; 0
+    call sexp_print
+    call runtime_print_newline
+
+    mov rdi, [rbp-112]           ; 1
+    call sexp_print
+    call runtime_print_newline
+
+    mov rdi, [rbp-104]           ; 2
+    call sexp_print
+    call runtime_print_newline
+
+    mov rdi, [rbp-96]           ; 3
+    call sexp_print
+    call runtime_print_newline
+    ;; -->
+
     mov rdi, [rbp-96]         ; args[3]
     mov rsi, 0                ; nil
     call sexp_alloc_cons
@@ -7214,24 +7240,28 @@ inst_set_r_digit_operands:
 
     mov rdi, [rbp-104]          ; args.base-reg
     call tnode_reg_index
-
-    ;; SIB
-    cmp qword [rbp-120], 0      ; args.sib == 0
-    je .maybe_mod_0_not_sib
-
-    mov byte [rbp-70], 0x04     ; r/m = 0b100
-
-    mov byte [rbp-80], 1        ; has-sib
-    mov byte [rbp-79], 0        ; sib-ss = 0b00
-    mov byte [rbp-77], al       ; sib-r32 = base-reg
-    mov rdi, [rbp-120]          ; args.base-reg
-    call tnode_reg_index
-    mov byte [rbp-78], al       ; sib-index = none, 0b100
-
-    jmp .mod
-
-.maybe_mod_0_not_sib:
     mov byte [rbp-70], al       ; r/m
+
+    cmp al, 5                   ; 0b101, EBP
+    je .maybe_mod_0_to_mod_1_disp
+
+;    ;; SIB
+;    cmp qword [rbp-120], 0      ; args.sib == 0
+;    je .maybe_mod_0_not_sib
+;
+;    mov byte [rbp-70], 0x04     ; r/m = 0b100
+;
+;    mov byte [rbp-80], 1        ; has-sib
+;    mov byte [rbp-79], 0        ; sib-ss = 0b00
+;    mov byte [rbp-77], al       ; sib-r32 = base-reg
+;    mov rdi, [rbp-120]          ; args.base-reg
+;    call tnode_reg_index
+;    mov byte [rbp-78], al       ; sib-index = none, 0b100
+;
+;    jmp .mod
+;
+;.maybe_mod_0_not_sib:
+
 
     jmp .mod
 
@@ -7244,6 +7274,18 @@ inst_set_r_digit_operands:
     mov byte [rbp-79], 0        ; sib-ss = 0b00
     mov byte [rbp-78], 4        ; sib-index = none, 0b100
     mov byte [rbp-77], 5        ; sib-r32 = [*], 0b101
+
+    jmp .mod
+
+.maybe_mod_0_to_mod_1_disp:
+    mov byte [rbp-72], 1        ; mod
+    mov byte [rbp-69], 1        ; disp-size
+
+    mov rdi, 0
+    call sexp_alloc_int
+    mov rdi, rax
+    call tnode_alloc_uint_node
+    mov [rbp-96], rax           ; args.disp = 0
 
     jmp .mod
 
@@ -7277,7 +7319,7 @@ inst_set_r_digit_operands:
     mov rdi, [rbp-24]
 
     ;;
-    mov byte [rbp-72], 3        ; mod
+    mov byte [rbp-72], 2        ; mod
 
     mov rdi, [rbp-104]          ; args.base-reg
     call tnode_reg_index
@@ -10294,6 +10336,7 @@ str_debug_arrow_r:  db "->", 0
 str_debug_finished: db "[DEBUG] finished", 0
 str_debug_failed_to_parse_addr: db "[DEBUG] Failed to parse addr", 0
 str_debug_compat: db "[DEBUG] compat", 0
+str_debug_parse_addressing: db "[DEBUG] parse.addressing", 0
 
 g_asm_inst_table:
     dq str_inst_bits
