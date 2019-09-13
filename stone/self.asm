@@ -1334,14 +1334,13 @@ parse_expr_primitive:
     call parser_get_index
     mov [rbp-16], rax
 
-
-
-    ;; constant-value
-    ;; Reset failure of register parsing
+    ;; reset failure of register parsing
     mov rdi, [rbp-8]
     call parser_reset_failed
 
+    ;; constant-value
     mov rdi, [rbp-8]
+    mov rsi, 0
     call parse_constant_value
     mov [rbp-24], rax
 
@@ -2278,8 +2277,8 @@ parse_label_statement:
     ret
 
 
-;;; rdi:
-;;; rsi:
+;;; rdi: parser*
+;;; rsi: as-signed
 parse_label:
     push rbp
     mov rbp, rsp
@@ -2417,10 +2416,11 @@ parse_label:
 .ok:
     ;; value-tag
     ;;         ------4|1|1|1|1|
-    ;;         |          | | |
-    ;;                    | | 2 = label
-    ;;                    | 0   = size-unknown
-    ;;                    ?     = is-local
+    ;;         |        | | | |
+    ;;                  | | | 2 = label
+    ;;                  | | 0   = size-unknown
+    ;;                  | ?     = is-local
+    ;;                  ?       = signed
     mov rdi, 0x0000000000000002
 
     mov rax, qword [rbp-32]     ; is_local
@@ -2428,6 +2428,12 @@ parse_label:
     shl rax, 16                 ; 2 * 8 bits
     or rdi, rax
 
+    mov rax, qword [rbp-96]     ; as-signed
+    and rax, 0x00000000000000ff
+    shl rax, 24                 ; 3 * 8 bits
+    or rdi, rax
+
+    ;;
     mov rsi, 0
     call sexp_alloc_int
     mov rdi, rax                ; value-tag
@@ -2991,6 +2997,13 @@ tnode_label_is_local:
     call tnode_type
     shr rax, 16                 ; 2 * 8 bits
     and rax, 0x00000000000000ff ; is-local
+    ret
+
+;;; rdi: sexp*, (type . value)
+tnode_label_is_signed:
+    call tnode_type
+    shr rax, 24                 ; 3 * 8 bits
+    and rax, 0x00000000000000ff ; is-signed
     ret
 
 ;;; rdi: sexp*(tnode)
@@ -7807,6 +7820,9 @@ inst_set_r_digit_operands:
     cmp qword [rbp-96], 0       ; args.disp != nil
     jne .maybe_mod_1_2
 
+.maybe_mod_0_rm_disp:
+    mov qword [rbp-96], 0       ; disp = nil
+
     ;; [REG]
 .maybe_mod_0:
     mov byte [rbp-72], 0        ; mod
@@ -7867,12 +7883,19 @@ inst_set_r_digit_operands:
 
 .maybe_mod_1_2:
     mov rdi, [rbp-104]          ; args.base-reg
-    cmp rdi, 0
+    cmp rdi, 0                  ; args.base-reg == nil
     je .mod_0_disp
 
 ;    mov rdi, [rbp-96]           ; disp
 ;    call tnode_print
 ;    call runtime_print_newline
+
+    mov rdi, [rbp-96]           ; disp
+    call tnode_value
+    mov rdi, rax
+    call sexp_internal_int_value_raw
+    cmp rax, 0                  ; disp.value == 0
+    je .maybe_mod_0_rm_disp     ; disp can be elimitated
 
     mov rdi, [rbp-96]           ; disp
     call tnode_calc_imm_size
@@ -8745,10 +8768,8 @@ asm_eval_expr:
     jne .arg_label_doller_doller
 
     ;; other
-    mov rdi, [rbp-16]           ; (type . value): sexp*
-    call tnode_value            ; value as symbol
     mov rdi, [rbp-8]            ; asm*
-    mov rsi, rax
+    mov rsi, [rbp-16]           ; (type . value): sexp*
     mov rdx, [rbp-104]          ; shrink
     call asm_find_label_value
 
@@ -9411,16 +9432,46 @@ asm_find_consts:
 
 
 ;;; rdi: asm*
-;;; rsi: sexp*, symbol
+;;; rsi: sexp*(tnode), symbol
 ;;; rdx: shrink
 asm_find_label_value:
     push rbp
     mov rbp, rsp
-    sub rsp, 24
+    sub rsp, 48
+
+    mov qword [rbp-48], 0       ; tmp
+    mov qword [rbp-40], 0       ; result
+    mov qword [rbp-32], 0       ; sexp*, symbol
 
     mov [rbp-24], rdx           ; bool, shrink
-    mov [rbp-16], rsi           ; sexp*, symbol
+    mov [rbp-16], rsi           ; sexp*(tnode)
     mov [rbp-8], rdi            ; asm*
+
+    mov rdi, [rbp-16]           ; sexp*(tnode)
+    call tnode_type_tag
+    cmp rax, 2
+    jne .invalid_symbol
+
+    mov rdi, [rbp-16]           ; (type . value): sexp*
+    call tnode_value            ; value as symbol
+    mov [rbp-32], rax           ; symbol
+
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-32]           ; symbol
+    mov rdx, [rbp-24]           ; shrink
+    call asm_find_consts
+    cmp rax, 0
+    jne .found                  ; found
+
+    mov rdi, [rbp-8]            ; asm*
+    mov rsi, [rbp-32]           ; symbol
+    mov rdx, [rbp-24]           ; shrink
+    call asm_find_labels
+
+    jmp .found
+
+.found:
+    mov [rbp-40], rax           ; result
 
 ;    ;; REMOVE
 ;    call runtime_print_newline
@@ -9428,21 +9479,42 @@ asm_find_label_value:
 ;    mov rdi, [rbp-16]           ; (type . value)
 ;    call sexp_print
 ;    call runtime_print_newline
+;    mov rdi, [rbp-16]           ; sexp*(tnode)
+;    call tnode_label_is_signed
+;    mov rdi, rax
+;    call runtime_print_uint64
 ;    call runtime_print_newline
 ;    call runtime_print_newline
+;    ;;
 
-
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-16]           ; symbol
-    mov rdx, [rbp-24]           ; shrink
-    call asm_find_consts
+    mov rdi, [rbp-16]           ; sexp*(tnode)
+    call tnode_label_is_signed
     cmp rax, 0
-    jne .break                  ; found
+    je .evaled
 
-    mov rdi, [rbp-8]            ; asm*
-    mov rsi, [rbp-16]           ; symbol
-    mov rdx, [rbp-24]           ; shrink
-    call asm_find_labels
+.to_signed:
+    mov rdi, [rbp-40]           ; result
+
+    call tnode_value
+    mov rdi, rax
+   call sexp_alloc_neg_int
+    mov [rbp-48], rax           ; tmp
+
+    ;; reconstruct
+    mov rdi, [rbp-40]           ; result
+    call tnode_type_value
+    mov rdi, rax
+    mov rsi, [rbp-48]           ; tmp
+    call sexp_alloc_cons
+    mov [rbp-40], rax           ; result
+
+.evaled:
+    mov rax, [rbp-40]           ; result
+    jmp .break
+
+.invalid_symbol:
+    mov rdi, 33
+    call runtime_exit
 
 .break:
     leave
@@ -9873,11 +9945,38 @@ sexp_internal_int_value:
     mov rax, rcx
     ret
 
+
+;;; rdi*: int
+sexp_alloc_neg_int:
+    call sexp_internal_int_value_raw
+    mov rcx, rax
+    call sexp_internal_signed
+    xor al, 1
+    mov rdi, rcx
+    mov rsi, rax
+    call sexp_alloc_int
+    ret
+
 ;;; rdi: *value
 sexp_internal_signed:
     mov rax, [rdi]              ; type-tag
     shr rax, 8                  ; 1 * 8
     and rax, 0x00ff
+    ret
+
+;;; rdi: value*
+sexp_internal_int_neg:
+    mov rax, [rdi]              ; type-tag
+    shr rax, 8                  ; 1 * 8
+    and rax, 0x00ff
+    not rax
+    shl rax, 8                  ; 1 * 8
+
+    mov rcx, [rdi]              ; type-tag
+    and rcx, 0x00ff             ; mask-signed
+    or rcx, rax
+    mov [rdi], rcx              ; type-tag
+
     ret
 
 ;;; rdi: *value
@@ -11261,9 +11360,20 @@ g_asm_inst_template_mov:
 ;;;
 g_asm_inst_template_xor:
     dq 1                        ; optimizable
+    ;; I
+    dq .al_imm8
     ;; MR
     dq .rm64_r64
     dq 0
+
+.al_imm8:
+    dd 2
+    db 0x01, 0x01, 0x00, 0x00   ; al
+    db 0x04, 0x01, 0xff, 0x00   ; imm8
+    db 0x00
+    db 0x01                     ; op-length
+    db 0x34
+    db const_asm_inst_type_i
 
 .rm64_r64:
     dd 2
