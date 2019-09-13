@@ -3109,13 +3109,13 @@ asm_process_statements:
     call asm_process_statements_phase0
 
 .loop:
-    ;; debug
-    mov rdi, str_debug_asm_phase1
-    call runtime_print_string
-    mov rdi, qword [rbp-32]
-    call runtime_print_uint64
-    call runtime_print_newline
-    ;;
+;    ;; debug
+;    mov rdi, str_debug_asm_phase1
+;    call runtime_print_string
+;    mov rdi, qword [rbp-32]
+;    call runtime_print_uint64
+;    call runtime_print_newline
+;    ;;
 
     mov rdi, [rbp-16]           ; asm*
     mov rsi, [rbp-8]            ; statements*
