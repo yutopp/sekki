@@ -11,7 +11,7 @@ nasm -f bin self.asm -o stone-0
 chmod +x stone-0
 ```
 
-### Second state
+### Second stage
 
 Use a first-stage build to build itself.
 
